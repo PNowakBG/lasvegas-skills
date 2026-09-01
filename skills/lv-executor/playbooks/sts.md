@@ -150,8 +150,25 @@ przy złej kwocie.
 1. Kliknij przycisk `Postaw ... zł`.
 2. Jeśli wyskoczy dialog zmiany kursu — zaakceptuj, gdy nowy kurs jest wyższy albo niższy
    o ≤ 2 % od `odds` ze zlecenia; niższy o więcej → anuluj i `skipped odds_drift`.
-3. Poczekaj ~3 s. Ekran potwierdzenia pokazuje „Przyjęliśmy Twój kupon!", „Kurs
-   całkowity" i „Możesz wygrać". Uwaga na modal „Dzień Bonuserii" (1/14) — zamknij go (X).
+3. Poczekaj ~3 s i odczytaj TRZY rzeczy naraz — potwierdzenie, błędy, saldo:
+   - potwierdzenie: „Przyjęliśmy Twój kupon!", „Kurs całkowity", „Możesz wygrać";
+     uwaga na modal „Dzień Bonuserii" (1/14) — zamknij go (X);
+   - **błędy: zebrać tekst WSZYSTKICH widocznych komunikatów**, nie tylko szukać słowa
+     „błąd" — STS pisze je w kontenerach przy kuponie (`[role="alert"]`, elementy
+     z klasą zawierającą `error`, `alert`, `toast`, `notification`, `message`) i bez
+     słowa „błąd". Znane komunikaty i decyzje:
+     - „Osiągnięto dzienny limit czasu gry. Zmień limity" → NATYCHMIAST
+       `failed bookmaker_limit "<dokładny tekst>"` i koniec pracy nad WSZYSTKIMI
+       zleceniami z tej sesji (limit jest na koncie, nie na kuponie). 01.09 agent
+       klikał „Postaw" na cztery sposoby przez 8 minut, zanim przeczytał ten tekst.
+     - „minimalna stawka" → `skipped bookmaker_limit`.
+   - saldo `Depozyt NNN,NN zł`: bez zmiany + brak potwierdzenia + przycisk `Postaw`
+     nadal aktywny = kupon NIE poszedł.
+   **Jedno kliknięcie, potem czytanie — nie drugie kliknięcie.** Ponowny klik wolno
+   wykonać tylko, gdy wszystkie trzy odczyty mówią „nie postawiono" i nie ma
+   komunikatu błędu; wtedy raz, tą samą metodą co w kroku 5 (prawdziwy klik CDP), i
+   znów odczyt. Bez komunikatu i bez przyjęcia po drugim kliku → `failed ui_error`
+   z opisem, co pokazuje ekran.
 4. **ticketId — najpewniejsze źródło to sieć, nie UI.** Przed kliknięciem Postaw włącz
    `cdp("Network.enable")`; po kliknięciu `drain_events()` i znajdź odpowiedź POST-a
    stawiającego kupon (url zawiera bet/coupon/ticket) — body odpowiedzi
@@ -172,7 +189,11 @@ przy złej kwocie.
 - Banery „bonus / boost / zgarnij" — ignoruj, nigdy nie zaznaczaj boostów (zmieniają kurs).
 - **Minimalna stawka STS: 2 zł.** Zlecenie ze stawką < 2 zł odbije się od kasy —
   raport `skipped bookmaker_limit` (nie próbuj podnosić stawki samowolnie).
-- Przycisk `Postaw` nieaktywny / toast z błędem (np. „minimalna stawka") → screenshot +
-  `failed ui_error` z treścią błędu.
+- Przycisk `Postaw` nieaktywny / toast z błędem → najpierw dopasuj do znanych
+  komunikatów z kroku 6.3 (limit czasu gry = `bookmaker_limit`, minimalna stawka =
+  `skipped bookmaker_limit`); nieznany tekst → `failed ui_error` z jego treścią.
+- **Dzienny limit czasu gry (Odpowiedzialna gra) liczy CZAS SESJI, także sesje agenta.**
+  Bieg 35–40 min ×4 w jeden dzień zjada limit sam z siebie — im krótsza sesja, tym lepiej;
+  nie „szukaj" po stronie dłużej niż potrzeba (krok 3: bezpośredni URL meczu).
 - Wylogowanie w trakcie (znów widać `Zaloguj się`) → `failed not_logged_in`.
 - Nie klikaj `Postaw` dwa razy — po kliknięciu czekaj na ekran potwierdzenia.
