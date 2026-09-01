@@ -75,7 +75,9 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    salda konta w LasVegas.
    Błąd w kroku 7-8: NIE raportuj porażki od razu — najpierw tryb SAMONAPRAWY
    playbooka (`references/learning-procedure.md`); dopiero druga porażka pod rząd
-   → `bash scripts/lv-api.sh failed <betId> <powód>` i powiadom użytkownika w czacie.
+   → `bash scripts/lv-api.sh failed <betId> <powód> "<co dokładnie pokazał bukmacher>"` i powiadom
+   użytkownika w czacie. Detail jest obowiązkowy jak przy `skipped` — komunikat buka
+   (np. „Dzienny limit czasu gry osiągnięty") to jedyna diagnoza, jaką zobaczy właściciel.
 
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - NIE stawiaj bez pozytywnego kill-switcha z kroku 2.

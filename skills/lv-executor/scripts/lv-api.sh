@@ -61,10 +61,17 @@ case "$cmd" in
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   failed)
-    # failed <betId> <reason>
+    # failed <betId> <reason> [detail]
+    # Detail jest tak samo ważny jak przy `skipped`: 01.09 agent zgłosił
+    # `bookmaker_limit "Dzienny limit czasu gry osiągnięty"`, a bez tego pola
+    # w LasVegas został STARY detail z poprzedniej porażki (o dwóch nogach kuponu).
     betId="$2"
     reason="$3"
     body=$(printf '{"success":false,"aborted":false,"reason":"%s"}' "$reason")
+    if [[ -n "${4:-}" ]]; then
+      detail_escaped=$(printf '%s' "$4" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      body=$(printf '{"success":false,"aborted":false,"reason":"%s","reasonDetail":"%s"}' "$reason" "$detail_escaped")
+    fi
     curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
@@ -100,7 +107,7 @@ lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   claim <betId>                   podbij zlecenie (QUEUED → PLACING)
   placed <betId> <ticketId> <odds> [stake] [balanceBefore] [balanceAfter]   raport postawienia (salda = bezpiecznik budżetu)
-  failed <betId> <reason>         raport porażki
+  failed <betId> <reason> [detail]   raport porażki (detail: co dokładnie powiedział bukmacher)
   skipped <betId> <reason> [detail]  świadome pominięcie (detail wymagany)
   kill-switch                     exit 0 = wolno, exit 1 = wstrzymane
   status                          stan reguł (JSON)
