@@ -45,6 +45,13 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
 
 ## Krok 4: wybór rynku i kursu
 
+0. **Kupon musi być PUSTY przed pierwszym klikiem.** STS trzyma nogi kuponu
+   w sesji przeglądarki między przebiegami — 01.09 agent zastał na kuponie nogę
+   Toulouse z poprzedniego (pominiętego) zlecenia i budował kupon 2-nogowy dla
+   Real Sociedad. Zanim klikniesz kurs: sprawdź w AX tree prawą kolumnę kuponu;
+   każdą istniejącą nogę usuń (X przy nodze albo „Usuń wszystko"), dopiero
+   potem dodawaj selekcję. Kupon z inną liczbą nóg niż 1 (lub nogi AKO) NIGDY
+   nie idzie do „Postaw" (verification-rules §4).
 1. Rynek `1x2` ma nagłówek `Mecz` (StaticText). Pod nim trzy przyciski kursów:
    `1 <kurs>` (home), `X <kurs>` (remis), `2 <kurs>` (away) — np. `1 2.95`.
 2. Wybierz przycisk wg `outcome` ze zlecenia (home→`1 `, draw→`X `, away→`2 `;
