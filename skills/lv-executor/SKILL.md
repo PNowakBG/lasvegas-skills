@@ -61,11 +61,14 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
 7. **Weryfikacja kuponu na ekranie** wg `references/verification-rules.md`:
    kurs na ekranie vs `odds` (tolerancja ±2%), stawka vs `stake`, rynek/typ vs
    zlecenie, liczba selekcji w kuponie == 1 (lub liczba nóg AKO). JAKA KOLWIEK
-   rozbieżność → NIE klikaj „Postaw" → `bash scripts/lv-api.sh skipped <betId> odds_drift`
-   (lub adekwatny powód) → następne zlecenie.
+   rozbieżność → NIE klikaj „Postaw" → `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.15 → 1.60"`
+   (lub adekwatny powód z detail) → następne zlecenie.
 8. **Postawienie.** Kliknij „Postaw"/„Zakład" zgodnie z playbookiem. Po
    potwierdzeniu odczytaj identyfikator kuponu (betId/ticket) wg playbooka.
-9. **Raport.** `bash scripts/lv-api.sh placed <betId> <ticketId> <actualOdds>`.
+9. **Raport.** `bash scripts/lv-api.sh placed <betId> <ticketId> <actualOdds> <actualStake> <balanceBefore> <balanceAfter>`
+   — salda odczytane wg playbooka przed i po postawieniu, liczby z kropką
+   (`130,50 zł` → `130.50`). Bez sald serwer nie uzgodni budżetu i nie odświeży
+   salda konta w LasVegas.
    Błąd w kroku 7-8: NIE raportuj porażki od razu — najpierw tryb SAMONAPRAWY
    playbooka (`references/learning-procedure.md`); dopiero druga porażka pod rząd
    → `bash scripts/lv-api.sh failed <betId> <powód>` i powiadom użytkownika w czacie.
@@ -98,5 +101,7 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 Po biegu:
 - `bash scripts/lv-api.sh status` / LasVegas UI: zlecenia przeszły QUEUED → PLACED
   (lub FAILED z powodem).
-- Nagrania sesji: `~/.hermes/browser_recordings/` — każdy realny klik jest na wideo.
+- Audyt: pełny transkrypt sesji Hermesa (każde wywołanie narzędzia, w tym kod
+  `browser_exec`) — `hermes sessions` / `hermes --resume <id>`. Nagrań wideo NIE ma:
+  backend browser-use nie nagrywa mimo `browser.record_sessions`.
 - Salda kont bukmacherskich widoczne w LasVegas (pętla zwrotna z potwierdzeń).

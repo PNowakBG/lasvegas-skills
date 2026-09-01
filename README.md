@@ -13,7 +13,8 @@ Agent Hermes na Twoim desktopie (macOS, Linux/Omarchy, Windows) sam:
 3. sam poznaje interfejs bukmachera (Superbet, STS, Betclic, Betfan), pisze i naprawia
    własne playbooki, gdy UI się zmieni,
 4. przed każdym postawieniem **weryfikuje kupon** (kurs, stawka, rynek) i tylko przy zgodności klika „Postaw",
-5. raportuje wynik z powrotem do LasVegas (betId, realny kurs), a każda sesja jest nagrywana.
+5. raportuje wynik z powrotem do LasVegas (betId, realny kurs, saldo), a każda sesja ma
+   pełny transkrypt w Hermesie (audyt każdego wywołania narzędzia).
 
 ## Instalacja — jedno polecenie
 

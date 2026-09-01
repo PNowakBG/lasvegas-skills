@@ -31,8 +31,9 @@ if (-not $hermesCmd) {
 if (-not $hermesCmd) { throw "Hermes nie jest dostępny w PATH. Otwórz nowy terminal i uruchom instalator ponownie." }
 Say "Hermes Agent: OK"
 
-# --- 2. Config przeglądarki (real-profile, headed, nagrywanie) ---------------
-Say "Konfiguruję przeglądarkę agenta (Twój profil, widoczne okno, nagrywanie sesji)…"
+# --- 2. Config przeglądarki (real-profile, headed) ----------------------------
+# Bez record_sessions: backend browser-use nie nagrywa wideo; audyt = transkrypt sesji Hermesa.
+Say "Konfiguruję przeglądarkę agenta (Twój profil, widoczne okno)…"
 New-Item -ItemType Directory -Force -Path $hermesHome | Out-Null
 $configPath = Join-Path $hermesHome "config.yaml"
 $config = @{}
@@ -48,7 +49,6 @@ browser:
   backend: "browser-use"
   use_real_profile: true
   headed: true
-  record_sessions: true
   real_profile_autoclose: true
 "@
 

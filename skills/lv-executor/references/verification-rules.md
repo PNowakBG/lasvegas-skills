@@ -35,7 +35,8 @@ przed każdym kliknięciem „Postaw". Naruszenie którejkolwiek = brak postawie
 
 - Kill switch sprawdzony PRZED tym zleceniem (odpowiedź musi być świeża, nie z cache).
 - Claim na zleceniu wykonany (PLACING) — nie stawiaj nie-claimniętego zlecenia.
-- Nagrywanie sesji działa (record_sessions w Hermesie) — to jedyny audyt realnych pieniędzy.
+- Audyt realnych pieniędzy = transkrypt sesji Hermesa (każde wywołanie narzędzia jest
+  zapisane; `hermes --resume <id>`). Nagrań wideo nie ma — nie powołuj się na nie.
 
 ## Powody raportowane do LasVegas (kody)
 
@@ -47,3 +48,12 @@ przed każdym kliknięciem „Postaw". Naruszenie którejkolwiek = brak postawie
 | `not_logged_in` | logowanie nieudane mimo prośby do usera |
 | `bookmaker_limit` | buk odrzucił stawkę (limit min/max) |
 | `ui_error` | błąd DOM/UI po samonaprawie playbooka |
+
+## Wymagany detail dla `skipped`
+
+Każde zgłoszenie `skipped` MUSI zawierać `reasonDetail` z konkretnymi danymi:
+
+- `odds_drift` — dokładne kursy: `kurs X → Y` (X = kurs ze zlecenia, Y = kurs na ekranie).
+- `market_mismatch` — czego nie potwierdzono na ekranie (np. `brak rynku '1x2' dla gospodarzy`).
+- `event_finished` — data/wynik meczu w momencie pominięcia (np. `mecz zakończony 2:1, 2026-08-30`).
+- `insufficient_balance` — saldo konta vs wymagana stawka (np. `saldo 12,50 zł < stawka 50,00 zł`).

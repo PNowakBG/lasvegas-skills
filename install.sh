@@ -62,8 +62,10 @@ if ! grep -qE '^(OPENROUTER_API_KEY|NOUS_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KE
   fi
 fi
 
-# --- 2. Config przeglądarki (real-profile, headed, nagrywanie) ---------------
-say "Konfiguruję przeglądarkę agenta (Twój profil, widoczne okno, nagrywanie sesji)…"
+# --- 2. Config przeglądarki (real-profile, headed) ----------------------------
+# Bez record_sessions: backend browser-use (browser_exec) nie nagrywa wideo — flaga
+# obiecywałaby audyt, którego nie ma. Audytem jest transkrypt sesji Hermesa.
+say "Konfiguruję przeglądarkę agenta (Twój profil, widoczne okno)…"
 python3 - "$HERMES_HOME" <<'PY'
 import os, sys, yaml
 home = sys.argv[1]
@@ -78,7 +80,6 @@ browser = cfg.get("browser") or {}
 browser.setdefault("backend", "browser-use")
 browser["use_real_profile"] = True
 browser["headed"] = True
-browser["record_sessions"] = True
 browser["real_profile_autoclose"] = True
 cfg["browser"] = browser
 os.makedirs(home, exist_ok=True)

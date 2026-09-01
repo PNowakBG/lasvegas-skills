@@ -51,11 +51,11 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
    dokładniej: prefiks przed spacją musi pasować do wyniku rynku 1x2).
 3. PRZED kliknięciem przeczytaj kurs z etykiety przycisku (spacja, potem liczba z
    kropką, np. `1 2.95` → 2.95). Jeśli < `minOdds` ze zlecenia → NIE klikaj; raport
-   `skipped odds_drift` (podaj aktualny kurs w reason). Kurs równy `odds` ze zlecenia
+   `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"` (podaj aktualny kurs w detail). Kurs równy `odds` ze zlecenia
    lub minimalnie niższy, ale >= `minOdds` → klikaj (to normalna zmiana, nie drift).
 4. Kliknij — po prawej pojawia się kupon z selekcją. Po kliknięciu przeczytaj kurs
    Z KUPONU i porównaj z `minOdds`; dopiero gdy kupon pokazuje mniej → usuń selekcję
-   (X na kuponie) i `skipped odds_drift`.
+   (X na kuponie) i `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"`.
 
 ### Rynek rożnych (`corners_ouNNN`) — od 29.08
 
@@ -67,7 +67,7 @@ cyfry/10 (`corners_ou105` → 10,5; `corners_ou95` → 9,5). Strona:
    „Rzuty rożne" / „Rożne". Sekcja ma WIELE linii (8,5 / 9,5 / 10,5 / 11,5…),
    każda z parą przycisków „Powyżej X" / „Poniżej X" (kurs w etykiecie).
 2. Wybierz przycisk DOKŁADNIE z linią ze zlecenia. Jeśli linii nie ma w ofercie
-   → `skipped line_not_found` (podaj dostępne linie w reason) — NIGDY nie klikaj
+   → `bash scripts/lv-api.sh skipped <betId> line_not_found "dostępne: 8,5 / 9,5 / 11,5"` (podaj dostępne linie w detail) — NIGDY nie klikaj
    „najbliższej" linii, to inny zakład.
 3. Bramka kursu i weryfikacja kuponu: identycznie jak w 1x2 (punkty 3-4 wyżej).
    Na kuponie selekcja musi czytać się jako rożne z właściwą linią — jeśli kupon
@@ -119,8 +119,11 @@ przy złej kwocie.
 5. Odczytaj ponownie `Depozyt NNN,NN zł` → `balanceAfter`. Saldo powinno spaść dokładnie
    o stawkę (STS: z konta schodzi stawka brutto; „Możesz wygrać" liczone od stawki netto
    po podatku 12% — np. 2 zł → netto 1,76 zł → wygrana 5,19 zł przy kursie 2.95).
-6. Raport: `bash scripts/lv-api.sh placed <betId> <ticketId> <actualOdds> <actualStake>`
-   (actualOdds = kurs z kuponu, actualStake = kwota z przycisku Postaw).
+6. Raport: `bash scripts/lv-api.sh placed <betId> <ticketId> <actualOdds> <actualStake> <balanceBefore> <balanceAfter>`
+   (actualOdds = kurs z kuponu, actualStake = kwota z przycisku Postaw, salda z kroku 2
+   i punktu 5 jako liczby z kropką: `Depozyt 130,50 zł` → `130.50`). Serwer porównuje
+   spadek salda ze stawką i przy rozjeździe wyłącza regułę auto-place — to bezpiecznik,
+   nie statystyka; bez sald go nie ma.
 
 ## Pułapki
 
