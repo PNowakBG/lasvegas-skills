@@ -6,10 +6,14 @@ przed każdym kliknięciem „Postaw". Naruszenie którejkolwiek = brak postawie
 ## 1. Kurs
 
 - Odczytaj kurs z ekranu kuponu (nie z oferty — liczy się ten na kuponie).
-- Tolerancja: `|odds_ekran − odds_zlecenie| / odds_zlecenie ≤ 0.02`.
-- Kurs HIGHER niż w zleceniu jest OK (bonus dla nas) — ale tylko w tolerancji.
-  Wyraźnie wyższy kurs (np. +5%) = podejrzany rynek; potraktuj jak `odds_drift`.
-- Kurs niższy o więcej niż 2% → `skipped: odds_drift`. Nie negocjuj, nie poprawiaj.
+- Tolerancja jest ASYMETRYCZNA (decyzja właściciela 2026-09-01):
+  - kurs **niższy** niż w zleceniu o więcej niż 2 % (`(odds_zlecenie − odds_ekran) / odds_zlecenie > 0.02`)
+    → `skipped: odds_drift`. Nie negocjuj, nie poprawiaj.
+  - kurs **wyższy** niż w zleceniu → bierz, bez górnej granicy. Lepsza cena nie jest
+    powodem do blokady — 01.09 zlecenie Toulouse–Lille (2.40) padło przy 2.50 na STS
+    przez dawną regułę „za dobry kurs = podejrzany".
+- Warunek dla wyższego kursu: rynek, linia i typ muszą być potwierdzone DOKŁADNIE
+  (§3–§4). Wyższy kurs przy niepewnym dopasowaniu to nadal `market_mismatch`, nie okazja.
 
 ## 2. Stawka
 

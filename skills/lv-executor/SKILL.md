@@ -63,7 +63,7 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    sugerowaną" przez bukmachera). Zignoruj banery bonusowe i boosty kursowe —
    nie klikaj niczego, co zmienia kupon.
 7. **Weryfikacja kuponu na ekranie** wg `references/verification-rules.md`:
-   kurs na ekranie vs `odds` (tolerancja ±2%), stawka vs `stake`, rynek/typ vs
+   kurs na ekranie vs `odds` (niższy o >2 % → `odds_drift`; wyższy → bierz), stawka vs `stake`, rynek/typ vs
    zlecenie, liczba selekcji w kuponie == 1 (lub liczba nóg AKO). JAKA KOLWIEK
    rozbieżność → NIE klikaj „Postaw" → `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.15 → 1.60"`
    (lub adekwatny powód z detail) → następne zlecenie.

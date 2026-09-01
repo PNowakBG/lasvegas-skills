@@ -71,12 +71,14 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
 2. Wybierz przycisk wg `outcome` ze zlecenia (home→`1 `, draw→`X `, away→`2 `;
    dokładniej: prefiks przed spacją musi pasować do wyniku rynku 1x2).
 3. PRZED kliknięciem przeczytaj kurs z etykiety przycisku (spacja, potem liczba z
-   kropką, np. `1 2.95` → 2.95). Jeśli < `minOdds` ze zlecenia → NIE klikaj; raport
-   `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"` (podaj aktualny kurs w detail). Kurs równy `odds` ze zlecenia
-   lub minimalnie niższy, ale >= `minOdds` → klikaj (to normalna zmiana, nie drift).
+   kropką, np. `1 2.95` → 2.95). Bramka kursu (verification-rules §1): niższy niż `odds`
+   ze zlecenia o więcej niż 2 % → NIE klikaj; raport
+   `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"` (podaj aktualny kurs w detail).
+   Równy, minimalnie niższy (≤ 2 %) albo **wyższy** → klikaj — wyższy kurs to lepszy zakład,
+   nie sygnał ostrzegawczy (01.09: 2.50 wobec 2.40 na Toulouse–Lille miało zostać postawione).
 4. Kliknij — po prawej pojawia się kupon z selekcją. Po kliknięciu przeczytaj kurs
-   Z KUPONU i porównaj z `minOdds`; dopiero gdy kupon pokazuje mniej → usuń selekcję
-   (X na kuponie) i `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"`.
+   Z KUPONU i zastosuj tę samą bramkę; dopiero gdy kupon pokazuje kurs niższy o >2 % →
+   usuń selekcję (X na kuponie) i `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"`.
 
 ### Rynek rożnych (`corners_ouNNN`) — od 29.08
 
@@ -146,8 +148,8 @@ przy złej kwocie.
 ## Krok 6: postawienie i potwierdzenie
 
 1. Kliknij przycisk `Postaw ... zł`.
-2. Jeśli wyskoczy dialog zmiany kursu — zaakceptuj TYLKO gdy nowy kurs >= `minOdds`;
-   inaczej anuluj i `skipped odds_drift`.
+2. Jeśli wyskoczy dialog zmiany kursu — zaakceptuj, gdy nowy kurs jest wyższy albo niższy
+   o ≤ 2 % od `odds` ze zlecenia; niższy o więcej → anuluj i `skipped odds_drift`.
 3. Poczekaj ~3 s. Ekran potwierdzenia pokazuje „Przyjęliśmy Twój kupon!", „Kurs
    całkowity" i „Możesz wygrać". Uwaga na modal „Dzień Bonuserii" (1/14) — zamknij go (X).
 4. **ticketId — najpewniejsze źródło to sieć, nie UI.** Przed kliknięciem Postaw włącz
