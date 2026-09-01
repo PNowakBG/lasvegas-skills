@@ -49,9 +49,23 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
    w sesji przeglądarki między przebiegami — 01.09 agent zastał na kuponie nogę
    Toulouse z poprzedniego (pominiętego) zlecenia i budował kupon 2-nogowy dla
    Real Sociedad. Zanim klikniesz kurs: sprawdź w AX tree prawą kolumnę kuponu;
-   każdą istniejącą nogę usuń (X przy nodze albo „Usuń wszystko"), dopiero
-   potem dodawaj selekcję. Kupon z inną liczbą nóg niż 1 (lub nogi AKO) NIGDY
-   nie idzie do „Postaw" (verification-rules §4).
+   każdą istniejącą nogę usuń, dopiero potem dodawaj selekcję. Kupon z inną
+   liczbą nóg niż 1 (lub nogi AKO) NIGDY nie idzie do „Postaw" (verification-rules §4).
+
+   **Jak usunąć nogę (zmierzone w DOM 01.09):** X przy nodze to przycisk BEZ
+   etykiety — `button.only-icon.sds-button.tertiary.small` w wierszu nogi
+   (wiersz = najbliższy przodek elementu z nazwą meczu). W AX tree jest
+   bezimienny, więc szukaj po klasie w `js(...)`:
+   ```js
+   (() => { const rows = [...document.querySelectorAll('*')].filter(e => e.children.length === 0
+     && e.getBoundingClientRect().left > innerWidth*0.55 && /NAZWA_MECZU/i.test(e.textContent));
+     for (const leaf of rows) { let n = leaf; for (let i = 0; i < 8 && n; i++, n = n.parentElement) {
+       const x = [...n.querySelectorAll('button')].find(b => /only-icon/.test(b.className) && !/Postaw/i.test(b.textContent));
+       if (x) { x.click(); break; } } } })()
+   ```
+   Gdy po tym nogi nadal są (kupon „skażony" przeżył reload — 01.09), skasuj
+   lokalny szkic kuponu i przeładuj: `localStorage.removeItem('betslip-cache'); location.reload()`.
+   Weryfikacja: w prawej kolumnie brak nazw meczów i brak przycisku `Postaw`.
 1. Rynek `1x2` ma nagłówek `Mecz` (StaticText). Pod nim trzy przyciski kursów:
    `1 <kurs>` (home), `X <kurs>` (remis), `2 <kurs>` (away) — np. `1 2.95`.
 2. Wybierz przycisk wg `outcome` ze zlecenia (home→`1 `, draw→`X `, away→`2 `;
