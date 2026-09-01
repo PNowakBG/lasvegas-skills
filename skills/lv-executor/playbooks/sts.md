@@ -59,8 +59,8 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
 
 ### Rynek rożnych (`corners_ouNNN`) — od 29.08
 
-Zlecenie niesie rynek kanoniczny `corners_ou<cyfry>`: dekoduj linię jako
-cyfry/10 (`corners_ou105` → 10,5; `corners_ou95` → 9,5). Strona:
+Zlecenie niesie rynek kanoniczny `corners_ou<cyfry>`: dekoduj linię jak w sekcji
+goli niżej (`corners_ou105` → 10,5; `corners_ou95` → 9,5). Strona:
 `corners_under` → przycisk „Poniżej <linia>", `corners_over` → „Powyżej <linia>".
 
 1. Na stronie meczu znajdź w AX tree sekcję rożnych — nagłówek zawiera
@@ -75,6 +75,25 @@ cyfry/10 (`corners_ou105` → 10,5; `corners_ou95` → 9,5). Strona:
 
 Status: sekcja dodana przed pierwszym żywym zleceniem rożnych — przy nim
 zweryfikuj dokładne nazwy etykiet i DOPRECYZUJ ten przepis (learning-procedure).
+
+### Rynek goli (`ou<cyfry>`) — od 01.09
+
+Klucz rynku to linia z usuniętą kropką: `ou2` = **2** (linia całkowita), `ou25` = 2,5,
+`ou3` = 3, `ou35` = 3,5, `ou05` = 0,5, `ou1` = 1, `ou15` = 1,5. Reguła: jedna cyfra →
+liczba całkowita; dwie–trzy cyfry zakończone „5" → ostatnia cyfra to połówka
+(`105` → 10,5). NIGDY nie bierz „najbliższej" linii z oferty — 01.09 zlecenie
+`ou2`/under (2.70) zostało odczytane jako „Poniżej 2,5" (1.90) i pominięte
+z fałszywym `odds_drift`; właściwa linia 2 była w ofercie.
+
+1. Na stronie meczu sekcja **„Liczba goli"** ma WIELE linii (0,5 / 1,5 / 2 / 2,5 / 3 / 3,5…).
+   STS renderuje przyciski jako `-2 <kurs>` (poniżej) i `+2 <kurs>` (powyżej) albo
+   „Poniżej 2" / „Powyżej 2". `under` → minus/„Poniżej", `over` → plus/„Powyżej".
+2. Wybierz DOKŁADNIE linię ze zlecenia. Linia całkowita (2, 3) to zakład azjatycki —
+   przy dokładnie tylu golach STS zwraca stawkę; to inny rynek niż 2,5 i kursy się nie
+   pokrywają. Brak linii w ofercie → `bash scripts/lv-api.sh skipped <betId> line_not_found "dostępne: 1,5 / 2,5 / 3,5"`
+   (podaj dostępne linie w detail).
+3. Bramka kursu i weryfikacja kuponu jak w 1x2 (punkty 3–4 wyżej). Kupon musi pokazywać
+   TĘ SAMĄ linię co zlecenie — inna linia → usuń selekcję i `failed wrong_line`.
 
 ## Krok 5: stawka (KRYTYCZNE — Angular)
 

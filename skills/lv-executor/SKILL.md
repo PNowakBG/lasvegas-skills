@@ -55,6 +55,10 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    i następne zlecenie.
 6. **Budowa kuponu.** Znajdź rynek i typ zlecenia (market/outcome/selectionDetail;
    dopasowanie rozmyte: ignoruj wielkość liter, polskie znaki, „–" vs „-").
+   Klucze linii (`ou…`, `ht_ou…`, `corners_ou…`, `cards_ou…`) to liczba z usuniętą
+   kropką: `ou2` = 2,0, `ou25` = 2,5, `ou05` = 0,5, `corners_ou105` = 10,5 — jedna
+   cyfra to liczba całkowita, końcowe „5" po innej cyfrze to połówka. Linia musi
+   być DOKŁADNA; brak linii = `skipped line_not_found`, nigdy „najbliższa".
    Ustaw stawkę DOKŁADNIE `stake` (nigdy więcej, nigdy mniej, nigdy „wartość
    sugerowaną" przez bukmachera). Zignoruj banery bonusowe i boosty kursowe —
    nie klikaj niczego, co zmienia kupon.
