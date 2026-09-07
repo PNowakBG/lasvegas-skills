@@ -98,6 +98,27 @@ case "$cmd" in
     echo "$status"
     exit 0
     ;;
+  verifications)
+    # Lista zleceń do WERYFIKACJI: próba padła bez potwierdzenia, więc kupon
+    # mógł wejść u buka. Rozstrzygnij po otwartych kuponach / saldzie, potem `verify`.
+    curl -fsS -H "$(auth_header)" "$BASE/queue/verify"
+    ;;
+  verify)
+    # verify <betId> <placed:true|false> [ticketId] [detail]
+    # placed=true  → kupon JEST na koncie (znalazłeś go w otwartych zakładach);
+    # placed=false → kuponu NIE MA (saldo bez zmian) → zlecenie wróci do kolejki.
+    betId="$2"
+    placed="$3"
+    body=$(printf '{"placed":%s' "$placed")
+    [[ -n "${4:-}" ]] && body="$body,\"ticketId\":\"$4\""
+    if [[ -n "${5:-}" ]]; then
+      detail_escaped=$(printf '%s' "$5" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      body="$body,\"reasonDetail\":\"$detail_escaped\""
+    fi
+    body="$body}"
+    curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "$body" "$BASE/queue/$betId/verify"
+    ;;
   status)
     curl -fsS -H "$(auth_header)" "$BASE/kill-switch"
     ;;
@@ -105,6 +126,8 @@ case "$cmd" in
     cat <<'EOF'
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
+  verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
+  verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)
   claim <betId>                   podbij zlecenie (QUEUED → PLACING)
   placed <betId> <ticketId> <odds> [stake] [balanceBefore] [balanceAfter]   raport postawienia (salda = bezpiecznik budżetu)
   failed <betId> <reason> [detail]   raport porażki (detail: co dokładnie powiedział bukmacher)

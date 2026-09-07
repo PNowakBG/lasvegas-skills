@@ -14,8 +14,13 @@ say "Instalator stacjonarnego agenta LasVegas — krok po kroku wszystko zrobi z
 
 # --- 0. Kod parowania -------------------------------------------------------
 if [[ -z "$CODE" ]]; then
-  say "Nie podano kodu parowania."
-  read -r -p "Wklej kod z LasVegas (Podłącz agenta): " CODE
+  # `curl … | bash` daje skrypt na stdin — `read` bez przekierowania zjadłby
+  # KOLEJNE LINIE SKRYPTU zamiast wpisu użytkownika (prod 2026-09-07: CODE
+  # kończyło się tekstem wyrażenia regularnego, curl dostawał je w URL).
+  # Czytamy więc zawsze z terminala, nie z pipe'a.
+  if ! read -r -p "Wklej kod z LasVegas (Podłącz agenta): " CODE < /dev/tty; then
+    die "Brak terminala do wpisania kodu. Użycie: curl -fsSL <url>/install.sh | bash -s -- KOD_PAROWANIA"
+  fi
 fi
 [[ "$CODE" =~ ^[A-Z0-9]{10}$ ]] || die "Kod parowania ma 10 znaków (litery/cyfry, bez 0/O/1/I). Otrzymano: '$CODE'"
 
@@ -90,7 +95,7 @@ PY
 # --- 3. Skill lv-executor z tego tapa ---------------------------------------
 say "Instaluję skilla lv-executor…"
 hermes skills tap add PNowakBG/lasvegas-skills >/dev/null 2>&1 || true
-hermes skills install PNowakBG/lasvegas-skills/lv-executor
+hermes skills install --force PNowakBG/lasvegas-skills/lv-executor
 
 # --- 4. Kod parowania → token ------------------------------------------------
 say "Wymieniam kod parowania na token urządzenia…"

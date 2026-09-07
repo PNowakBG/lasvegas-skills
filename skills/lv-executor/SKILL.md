@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.0.0
+version: 1.1.0
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -35,6 +35,18 @@ i, przy pierwszym zleceniu danego bukmachera, `references/learning-procedure.md`
 
 Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
 
+0. **Weryfikacje zaległe (PRZED poll normalnej kolejki).**
+   `bash scripts/lv-api.sh verifications` — zlecenia, których poprzednia próba
+   padła bez potwierdzenia, więc **kupon mógł wejść u buka**. Dla każdego:
+   otwórz buka (wg playbooka) i sprawdź otwarte zakłady: szukaj meczu
+   (`homeTeam` vs `awayTeam`), stawki `stake` i rynku `market`/`outcome` z
+   zlecenia. Kupon jest na koncie → `bash scripts/lv-api.sh verify <betId> true
+   <ticketId>` (podaj PRAWDZIWY numer kuponu z buka). Kuponu nie ma (i saldo
+   bez zmian) → `bash scripts/lv-api.sh verify <betId> false "" "brak kuponu w
+   otwartych zakładach, saldo bez zmian"` — zlecenie wróci do kolejki.
+   **Nigdy nie stawiaj ponownie zlecenia z listy weryfikacji bez tego
+   rozstrzygnięcia** — retraj bez sprawdzenia postawił duplikat kuponu
+   (prod 2026-09-06: Napoli – Arsenal, dwa identyczne kupony u STS).
 1. **Poll.** `bash scripts/lv-api.sh orders` → lista zleceń. Pusta lista: koniec,
    nic nie rób.
 2. **Kill switch PRZED każdym zleceniem.** `bash scripts/lv-api.sh kill-switch` —
@@ -78,6 +90,8 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    → `bash scripts/lv-api.sh failed <betId> <powód> "<co dokładnie pokazał bukmacher>"` i powiadom
    użytkownika w czacie. Detail jest obowiązkowy jak przy `skipped` — komunikat buka
    (np. „Dzienny limit czasu gry osiągnięty") to jedyna diagnoza, jaką zobaczy właściciel.
+   Zlecenie trafi wtedy na listę weryfikacji (`verifications`) — rozstrzygnij je
+   przy najbliższym biegu zanim cokolwiek postawisz (krok 0).
 
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - NIE stawiaj bez pozytywnego kill-switcha z kroku 2.
