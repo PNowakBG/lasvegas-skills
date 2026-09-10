@@ -186,6 +186,14 @@ if ! QUEUE=$(queue_json); then
   exit 1
 fi
 date '+%F %T' > "$HEARTBEAT"
+
+# Model pytamy ZAWSZE — także przy pustej kolejce. To jedno małe żądanie, a
+# pieczątka z niego jest jedynym sygnałem, po którym LasVegas odróżnia agenta
+# aktualnego od starszej generacji. Bez tego urządzenie, które nie ma zleceń,
+# nie zawołałoby tego endpointu i wyglądało w UI na nieaktualne (fałszywy alarm).
+# Ręczne LV_MODEL (jeśli ustawione) wygrywa i wtedy o nic nie pytamy.
+[ -n "$LV_MODEL" ] || agent_config || true
+
 if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
   exit 0   # pusta kolejka: nie budzimy ani LLM, ani przeglądarki
 fi
@@ -200,10 +208,6 @@ if ! pgrep -f "hermes chat" >/dev/null 2>&1; then
     kill $orphans 2>/dev/null || true
   fi
 fi
-# Model pytamy PO sprawdzeniu kolejki — pusta kolejka nie kosztuje ani jednego
-# żądania więcej. Ręczne LV_MODEL (jeśli ustawione) ma pierwszeństwo: wtedy po
-# konfigurację nie pytamy.
-[ -n "$LV_MODEL" ] || agent_config || true
 log "kolejka: $ORDERS zleceń — budzę agenta (${LV_MODEL:-model domyślny Hermesa} @ ${LV_PROVIDER:-?})"
 
 # --- przeglądarka + cykl agenta -------------------------------------------------
