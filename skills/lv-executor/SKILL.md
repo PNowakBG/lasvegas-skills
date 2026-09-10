@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.1.0
+version: 1.1.1
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -94,6 +94,12 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    przy najbliższym biegu zanim cokolwiek postawisz (krok 0).
 
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
+- NIE otwieraj nowych kart na całość biegu — zlecenie otwieraj przez `goto_url`
+  w istniejącej karcie przeglądarki; `new_tab` tylko gdy nie ma żadnej karty.
+  Na STARCIE biegu posprzątaj karty bukmacherów z poprzednich biegów:
+  `curl http://localhost:9222/json` → zamknij każdą kartę poza jedną roboczą
+  (`curl http://localhost:9222/json/close/<id>`). Każda dodatkowa karta ciężkiej
+  strony bukmachera mnoży CPU i potrafi zawiesić kontrolę przeglądarki.
 - NIE stawiaj bez pozytywnego kill-switcha z kroku 2.
 - NIE stawiaj stawki innej niż `stake` z zlecenia.
 - NIE stawiaj, gdy kupon nie przeszedł pełnej weryfikacji z kroku 7.

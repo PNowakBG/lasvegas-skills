@@ -38,6 +38,9 @@ zero kluczy API, model i narzędzia skonfigurowane automatycznie.
 
 Instalator sam: stawia Hermesa, konfiguruje przeglądarkę, instaluje skilla, podłącza token
 i rejestruje autostart. Nie musisz znać się na terminalu — poza wklejeniem jednej komendy.
+Autostart działa oszczędnie: co 5 minut odpala się lekki cykl, który sprawdza kolejkę
+zwykłym żądaniem HTTP — sesja agenta (LLM + przeglądarka) budzi się **tylko**,
+gdy faktycznie są zlecenia do postawienia.
 
 Ręcznie (jeśli wolisz):
 

@@ -114,20 +114,31 @@ grep -q '^LV_EXECUTOR_TOKEN=' "$ENV_FILE" \
 say "Token zapisany do $ENV_FILE (plik .env Hermsa — nikt go nie wkleja w czat)."
 
 # --- 5. Autostart cyklu co 5 minut ------------------------------------------
-say "Rejestruję uruchamianie agenta co 5 minut + po restarcie komputera…"
+# launchd/systemd odpala CYKL (curl-only), nie sesję Hermesa: pusta kolejka ma
+# kosztować jedno żądanie HTTP, nie pełne wywołanie LLM. Historyczna lekcja:
+# bezpośredni „hermes chat" co 5 min zrobił 623 sesje w 3 dni, ~620 pustych.
+# Cykl budzi agenta (LLM + przeglądarka) dopiero gdy kolejka jest niepusta.
+say "Rejestruję uruchamianie cyklu co 5 minut + po restarcie komputera…"
 if [[ "$(uname)" == "Darwin" ]]; then
   PLIST="$HOME/Library/LaunchAgents/com.lasvegas.lv-executor.plist"
+  # PATH pod launchd jest okrojony — Hermes (node) i jego toolchain muszą być
+  # widoczne, inaczej cykl wołający hermesa pada na „node: command not found"
+  # (hotfix produkcyjny 2026-09-08).
+  LV_PATH="$HERMES_HOME/hermes-agent/venv/bin:$HERMES_HOME/hermes-agent/node_modules/.bin:$HERMES_HOME/node/bin:$HERMES_HOME/node:$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>com.lasvegas.lv-executor</string>
   <key>ProgramArguments</key><array>
-    <string>$HOME/.local/bin/hermes</string>
-    <string>chat</string>
-    <string>--toolsets</string><string>skills,terminal,browser</string>
-    <string>-q</string><string>/lv-executor wykonaj zaległe zlecenia</string>
+    <string>/bin/bash</string>
+    <string>$HERMES_HOME/skills/lv-executor/scripts/lv-executor-cycle.sh</string>
+    <string>cycle</string>
   </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$LV_PATH</string>
+    <key>HERMES_HOME</key><string>$HERMES_HOME</string>
+  </dict>
   <key>StartInterval</key><integer>300</integer>
   <key>RunAtLoad</key><true/>
   <key>StandardOutPath</key><string>$HERMES_HOME/lv-executor.log</string>
@@ -136,8 +147,12 @@ if [[ "$(uname)" == "Darwin" ]]; then
 EOF
   launchctl unload "$PLIST" >/dev/null 2>&1 || true
   launchctl load "$PLIST"
-  say "macOS: launchd zarejestrowany."
+  say "macOS: launchd zarejestrowany (cykl curl-only, LLM tylko przy zleceniach)."
 else
+  # Linux: cykl (lv-executor-cycle.sh) jest macOS-first (ensure_chrome przez `open`,
+  # launchd-specific) — dopóki nie będzie linuksowej ścieżki przeglądarki, timer
+  # woła sesję bezpośrednio. Przy realnej instalacji linuksowej przenieś cykl
+  # na xdg-open i wskaż timer na cycle-script jak w gałęzi Darwina wyżej.
   mkdir -p "$HOME/.config/systemd/user"
   cat > "$HOME/.config/systemd/user/lv-executor.service" <<EOF
 [Unit]
