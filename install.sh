@@ -14,6 +14,7 @@ say "Instalator stacjonarnego agenta LasVegas — krok po kroku wszystko zrobi z
 
 # --- 0. Kod parowania -------------------------------------------------------
 if [[ -z "$CODE" ]]; then
+  say "Nie podano kodu parowania."
   # `curl … | bash` daje skrypt na stdin — `read` bez przekierowania zjadłby
   # KOLEJNE LINIE SKRYPTU zamiast wpisu użytkownika (prod 2026-09-07: CODE
   # kończyło się tekstem wyrażenia regularnego, curl dostawał je w URL).
@@ -95,6 +96,8 @@ PY
 # --- 3. Skill lv-executor z tego tapa ---------------------------------------
 say "Instaluję skilla lv-executor…"
 hermes skills tap add PNowakBG/lasvegas-skills >/dev/null 2>&1 || true
+# --force: reinstalacja ma NAPRAWDĘ podmienić skill na nowszą wersję, inaczej
+# stare playbooki/scripts zostają i agent wciąż wykonuje przestarzałą procedurę.
 hermes skills install --force PNowakBG/lasvegas-skills/lv-executor
 
 # --- 4. Kod parowania → token ------------------------------------------------
