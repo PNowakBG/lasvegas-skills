@@ -28,18 +28,51 @@ LAST_RUN="$HERMES_HOME/lv-executor.last-run.log"
 ENV_FILE="$HERMES_HOME/.env"
 HERMES_BIN="$HOME/.local/bin/hermes"
 
-# Model przypięty do TEGO joba, niezależnie od model.default w config.yaml.
-# Od 2026-09-01 08:24: DeepSeek V4 Flash przez OpenRouter (klucz OPENROUTER_API_KEY
-# w ~/.hermes/.env; 0,065/0,18 $ za 1M tokenów, kontekst 1,3M, narzędzia ✓ —
-# sonda jednorazowa zwróciła „OK"). Płatne modele Nous wymagają kredytów, których
-# konto nie ma. Gdy OpenRouter zawiedzie (429/5xx/brak środków), Hermes przechodzi
-# na łańcuch fallback_providers z config.yaml (darmowe modele Nous).
-# 2026-09-01 16:xx: właściciel przełączył model Hermesa na v4-pro (hermes model);
-# egzekutor czyta model STĄD, więc zmiana musi być też tu. OpenRouter: 1,60/3,20 $ za 1M —
-# bieg z dwoma zleceniami na flashu trwał 35–39 min i ~200 wywołań narzędzi, pro ma
-# skrócić sesję (to sesje zjadły dzienny limit czasu gry na koncie STS).
-LV_MODEL="${LV_MODEL:-deepseek/deepseek-v4-pro}"
+# Model bierze się z LasVegas (`GET /api/executor/agent-config`), nie z tego pliku.
+# Powód: do 2026-09-10 model był tu zahardkodowany, więc wycofanie modelu u
+# dostawcy docierało do zadań serwerowych, a egzekutor zostawał na starej nazwie,
+# dopóki ktoś nie poprawił tego skryptu ręcznie. Teraz zmiana modelu to jedna
+# zmienna po stronie LasVegas — bez edycji tapa i bez reinstalacji na maszynie.
+# LV_MODEL/LV_PROVIDER zostały jako RĘCZNE nadpisanie do diagnostyki (gdy
+# ustawione, wygrywają z odpowiedzią API i o nic nie pytamy). Puste = pytamy API,
+# a gdy API nie odpowie, nie przekazujemy `-m` wcale — Hermes użyje wtedy swojego
+# model.default i łańcucha fallback_providers z config.yaml (darmowe modele Nous;
+# płatne wymagają kredytów, których konto nie ma).
+# Dobór modelu pod SESJE, nie pod jakość: bieg z dwoma zleceniami trwał 35–39 min
+# i ~200 wywołań narzędzi — to sesje zjadają dzienny limit czasu gry na koncie STS.
+LV_MODEL="${LV_MODEL:-}"
 LV_PROVIDER="${LV_PROVIDER:-openrouter}"
+
+# Katalog tego skilla — używany do wołania lv-api.sh, jedynego klienta API.
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Jedyne miejsce, przez które ten cykl rozmawia z API LasVegas.
+# lv_api <limit-czasu-sekundy> <komenda lv-api.sh> [argumenty...]
+#
+# Sekrety przekazujemy JAWNIE, zamiast eksportować je globalnie: `export`
+# wpuściłby token urządzenia do środowiska `hermes chat` i do przeglądarki
+# agenta, czyli tam, gdzie nie jest potrzebny.
+lv_api() {
+  local timeout="$1"
+  shift
+  LV_API_TIMEOUT="$timeout" \
+    LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" \
+    LV_API_URL="$LV_API_URL" \
+    bash "$SKILL_DIR/scripts/lv-api.sh" "$@"
+}
+
+# Model egzekutora z LasVegas. Niepowodzenie = nie wiemy, jaki model → caller
+# pomija `-m` i oddaje wybór Hermesowi (lepsze niż wpisanie czegokolwiek na ślepo).
+agent_config() {
+  local json model provider
+  json=$(lv_api 10 agent-config 2>/dev/null) || return 1
+  model=$(printf '%s' "$json" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  provider=$(printf '%s' "$json" | sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  [ -n "$model" ] || return 1
+  LV_MODEL="$model"
+  [ -n "$provider" ] && LV_PROVIDER="$provider"
+  return 0
+}
 
 # Blackhole trackerów przez PAC zamiast --host-resolver-rules: tamta flaga jest na
 # liście „złych flag" Chromium (bad_flags_prompt.cc) i wyświetla baner
@@ -91,8 +124,10 @@ load_env() {
 
 # GET /api/executor/queue — poza listą zleceń zwalnia po stronie serwera zawieszone
 # claimy tego urządzenia, więc warto go wołać co cykl nawet bez agenta.
+# Cały dostęp do API idzie przez lv-api.sh — to jedyne miejsce, które czyta
+# token urządzenia. Ten skrypt nie składa już samodzielnie żadnego żądania.
 queue_json() {
-  curl -fsS --max-time 15 -H "Authorization: Bearer $LV_EXECUTOR_TOKEN" "$LV_API_URL/api/executor/queue"
+  lv_api 15 orders
 }
 
 case "${1:-cycle}" in
@@ -165,13 +200,21 @@ if ! pgrep -f "hermes chat" >/dev/null 2>&1; then
     kill $orphans 2>/dev/null || true
   fi
 fi
-log "kolejka: $ORDERS zleceń — budzę agenta ($LV_MODEL @ $LV_PROVIDER)"
+# Model pytamy PO sprawdzeniu kolejki — pusta kolejka nie kosztuje ani jednego
+# żądania więcej. Ręczne LV_MODEL (jeśli ustawione) ma pierwszeństwo: wtedy po
+# konfigurację nie pytamy.
+[ -n "$LV_MODEL" ] || agent_config || true
+log "kolejka: $ORDERS zleceń — budzę agenta (${LV_MODEL:-model domyślny Hermesa} @ ${LV_PROVIDER:-?})"
 
 # --- przeglądarka + cykl agenta -------------------------------------------------
 ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl pominięty"; exit 1; }
 
 # UWAGA: nie używać `exec` — zastąpiłby shell i trap EXIT nigdy by nie zwolnił locka.
-"$HERMES_BIN" chat --toolsets skills,terminal,browser -m "$LV_MODEL" --provider "$LV_PROVIDER" \
+# `${ARR[@]+…}` zamiast `"${ARR[@]}"`: macOS ma bash 3.2, a tam pusta tablica pod
+# `set -u` kończy skrypt błędem „unbound variable" (model z API może nie przyjść).
+MODEL_ARGS=()
+[ -n "$LV_MODEL" ] && MODEL_ARGS=(-m "$LV_MODEL" --provider "$LV_PROVIDER")
+"$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury" \
   2>&1 | tee -a "$LOG" > "$LAST_RUN"
 rc=${PIPESTATUS[0]}

@@ -6,12 +6,27 @@ set -euo pipefail
 LV_API_URL="${LV_API_URL:-https://lv.ap2ju.com}"
 BASE="$LV_API_URL/api/executor"
 
+# Limit czasu na pojedyncze żądanie. Domyślnie brak (tak jak dotąd — nie zmieniamy
+# zachowania istniejącym wywołaniom). Cykl agenta ustawia LV_API_TIMEOUT=15:
+# bez limitu zawieszone połączenie trzyma lock i blokuje kolejne przebiegi.
 auth_header() {
   if [[ -z "${LV_EXECUTOR_TOKEN:-}" ]]; then
     echo "BŁĄD: brak LV_EXECUTOR_TOKEN. Zainstaluj agenta komendą z LasVegas (Podłącz agenta)." >&2
     exit 2
   fi
   printf 'Authorization: Bearer %s' "$LV_EXECUTOR_TOKEN"
+}
+
+# JEDYNE miejsce w tym skillu, które rozmawia z API LasVegas i jedyne, które
+# dotyka tokenu urządzenia. Nagłówek powstaje w `auth_header`, więc token nigdy
+# nie stoi w linii polecenia curl — dzięki temu da się go prześwietlić w jednym
+# miejscu zamiast szukać po całym skillu. Nowe wywołania API dopisuj TUTAJ.
+api_curl() {
+  if [[ -n "${LV_API_TIMEOUT:-}" ]]; then
+    curl -fsS --max-time "$LV_API_TIMEOUT" "$@"
+  else
+    curl -fsS "$@"
+  fi
 }
 
 # KAŻDA gałąź nazywa swoje argumenty jawnie (betId=$2, …) zamiast wstawiać
@@ -30,12 +45,12 @@ auth_header() {
 cmd="${1:-help}"
 case "$cmd" in
   orders)
-    curl -fsS -H "$(auth_header)" "$BASE/queue"
+    api_curl -H "$(auth_header)" "$BASE/queue"
     ;;
   claim)
     # claim <betId>
     betId="$2"
-    curl -fsS -X POST -H "$(auth_header)" "$BASE/queue/$betId/claim"
+    api_curl -X POST -H "$(auth_header)" "$BASE/queue/$betId/claim"
     ;;
   placed)
     # placed <betId> <ticketId> <actualOdds> [actualStake] [balanceBefore] [balanceAfter]
@@ -57,7 +72,7 @@ case "$cmd" in
     [[ -n "$balanceBefore" ]] && body="$body,\"balanceBefore\":$balanceBefore"
     [[ -n "$balanceAfter" ]] && body="$body,\"balanceAfter\":$balanceAfter"
     body="$body}"
-    curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   failed)
@@ -72,7 +87,7 @@ case "$cmd" in
       detail_escaped=$(printf '%s' "$4" | sed 's/\\/\\\\/g; s/"/\\"/g')
       body=$(printf '{"success":false,"aborted":false,"reason":"%s","reasonDetail":"%s"}' "$reason" "$detail_escaped")
     fi
-    curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   skipped)
@@ -84,12 +99,12 @@ case "$cmd" in
       detail_escaped=$(printf '%s' "$4" | sed 's/\\/\\\\/g; s/"/\\"/g')
       body=$(printf '{"success":false,"aborted":true,"reason":"%s","reasonDetail":"%s"}' "$reason" "$detail_escaped")
     fi
-    curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   kill-switch)
     # exit 0 = wolno stawiać; exit 1 = wstrzymane (halted albo reguła buka wyłączona)
-    status=$(curl -fsS -H "$(auth_header)" "$BASE/kill-switch")
+    status=$(api_curl -H "$(auth_header)" "$BASE/kill-switch")
     halted=$(printf '%s' "$status" | sed -n 's/.*"halted"[[:space:]]*:[[:space:]]*\(true\|false\).*/\1/p')
     if [[ "$halted" == "true" ]]; then
       echo "$status"
@@ -101,7 +116,7 @@ case "$cmd" in
   verifications)
     # Lista zleceń do WERYFIKACJI: próba padła bez potwierdzenia, więc kupon
     # mógł wejść u buka. Rozstrzygnij po otwartych kuponach / saldzie, potem `verify`.
-    curl -fsS -H "$(auth_header)" "$BASE/queue/verify"
+    api_curl -H "$(auth_header)" "$BASE/queue/verify"
     ;;
   verify)
     # verify <betId> <placed:true|false> [ticketId] [detail]
@@ -116,16 +131,23 @@ case "$cmd" in
       body="$body,\"reasonDetail\":\"$detail_escaped\""
     fi
     body="$body}"
-    curl -fsS -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/verify"
     ;;
   status)
-    curl -fsS -H "$(auth_header)" "$BASE/kill-switch"
+    api_curl -H "$(auth_header)" "$BASE/kill-switch"
+    ;;
+  agent-config)
+    # Model, na którym ma pracować agent egzekutora (provider + model).
+    # Serwer jest jedynym źródłem prawdy: zmiana modelu — także wycofanie go
+    # przez dostawcę — nie wymaga dotykania skryptów na maszynie.
+    api_curl -H "$(auth_header)" "$BASE/agent-config"
     ;;
   help|*)
     cat <<'EOF'
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
+  agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
   verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)
   claim <betId>                   podbij zlecenie (QUEUED → PLACING)
