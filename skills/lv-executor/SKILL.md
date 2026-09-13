@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.2.1
+version: 1.3.0
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -47,6 +47,31 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    **Nigdy nie stawiaj ponownie zlecenia z listy weryfikacji bez tego
    rozstrzygnięcia** — retraj bez sprawdzenia postawił duplikat kuponu
    (prod 2026-09-06: Napoli – Arsenal, dwa identyczne kupony u STS).
+
+**Krok 0 — logowanie bukmacherów.** Pobierz kolejkę SAM na starcie:
+`bash scripts/lv-api.sh orders` — nie czekaj z tym na krok 1 (pusta lista =
+koniec cyklu, bez otwierania przeglądarki). Serwer oddaje w niej także zlecenia
+buków, o których wie, że jesteś wylogowany (albo raport `logged_in` ma więcej
+niż **30 minut**, `LOGIN_STATE_FRESH_MS`); takie zlecenia mają
+`loginBlocked: true`, a ich `claim` kończy się 404 — dlatego najpierw ustal
+stan logowania, zanim cokolwiek podbijesz. Bramka dotyczy sondowanych buków:
+**superbet** i **sts** (`betclic-pl` i `betfan` nie są sondowane; brak raportu
+= `unknown` też nie blokuje). Dla każdego bukmachera z `loginBlocked: true`
+w kolejce otwórz buka i zweryfikuj logowanie wg `playbooks/<slug>.md`:
+- **zalogowany** → `bash scripts/lv-api.sh session <slug> logged_in <saldo>`
+  (saldo z playbooka, liczba z kropką: `130,50 zł` → `130.50`) — raport
+  odblokowuje zlecenia tego buka i odświeża saldo konta w LasVegas; claimuj je
+  normalnie,
+- **niezalogowany** → poproś użytkownika o zalogowanie w otwartym oknie (jak
+  w kroku 5); gdy się nie uda → `bash scripts/lv-api.sh session <slug>
+  logged_out` i POMIŃ w tym cyklu zlecenia tego buka z `loginBlocked: true` —
+  `claim` odrzuciłby je 404. Zlecenia zostają w kolejce i podejmie je następny
+  cykl po zalogowaniu.
+
+Krok 5 powtarza weryfikację na ekranie tuż przed kuponem — bramka patrzy na
+pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
+(`session … logged_in`) wyślij po udanym postawieniu, gdy saldo się zmieniło.
+
 1. **Poll.** `bash scripts/lv-api.sh orders` → lista zleceń. Pusta lista: koniec,
    nic nie rób.
 2. **Kill switch PRZED każdym zleceniem.** `bash scripts/lv-api.sh kill-switch` —
@@ -64,7 +89,11 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    użytkownikowi w czacie: „Zaloguj się do <bukmacher> w otwartym oknie — poczekam",
    czekaj i sprawdzaj ponownie co ~30 s (max 5 min), potem przejdź dalej.
    Nadal niezalogowany → `bash scripts/lv-api.sh failed <betId> not_logged_in`
-   i następne zlecenie.
+   i następne zlecenie. Ta porażka zamyka też kolejkę tego buka po stronie
+   serwera (stan `logged_out`) — nie wysyłaj po niej dodatkowego
+   `session <slug> logged_out`. Zalogowanie udane → zaraportuj
+   `bash scripts/lv-api.sh session <slug> logged_in [saldo]` (świeży raport
+   obowiązuje 30 minut, więc sesja z tego biegu pokrywa kolejne cykle).
 6. **Budowa kuponu.** Znajdź rynek i typ zlecenia (market/outcome/selectionDetail;
    dopasowanie rozmyte: ignoruj wielkość liter, polskie znaki, „–" vs „-").
    Klucze linii (`ou…`, `ht_ou…`, `corners_ou…`, `cards_ou…`) to liczba z usuniętą
@@ -91,7 +120,7 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    użytkownika w czacie. Detail jest obowiązkowy jak przy `skipped` — komunikat buka
    (np. „Dzienny limit czasu gry osiągnięty") to jedyna diagnoza, jaką zobaczy właściciel.
    Zlecenie trafi wtedy na listę weryfikacji (`verifications`) — rozstrzygnij je
-   przy najbliższym biegu zanim cokolwiek postawisz (krok 0).
+   przy najbliższym biegu zanim cokolwiek postawisz (punkt 0 — weryfikacje zaległe).
 
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - NIE otwieraj nowych kart na całość biegu — zlecenie otwieraj przez `goto_url`
@@ -109,7 +138,7 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 ## Pitfalls
 
 - Chrome 136+ blokuje zdalne debugowanie domyślnego profilu — Hermes steruje
-  migawką profilu (`~/.hermes/browser-profile/`), NIE używaj `/browser connect`
+  migawką profilu (`~/.hermes/lv-browser-profile/`), NIE używaj `/browser connect`
   na domyślnym profilu.
 - Windows: resync real-profile wymaga CAŁKOWITEJ zamkniętej przeglądarki
   (też instancja tray/background). Jeśli sesja wychodzi niezalogowana — najpierw
@@ -127,6 +156,9 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 Po biegu:
 - `bash scripts/lv-api.sh status` / LasVegas UI: zlecenia przeszły QUEUED → PLACED
   (lub FAILED z powodem).
+- `bash scripts/lv-api.sh session <slug> <logged_in|logged_out> [saldo]` wysłane
+  w Kroku 0 (i po udanym postawieniu) — LasVegas widzi świeży stan logowania
+  oraz saldo konta tego bukmachera.
 - Audyt: pełny transkrypt sesji Hermesa (każde wywołanie narzędzia, w tym kod
   `browser_exec`) — `hermes sessions` / `hermes --resume <id>`. Nagrań wideo NIE ma:
   backend browser-use nie nagrywa mimo `browser.record_sessions`.

@@ -21,8 +21,15 @@ Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP
 ## Krok 2: weryfikacja logowania
 
 - Zalogowany: w AX tree (role button/link/StaticText) widać `Wpłata` oraz `Depozyt NNN,NN zł`.
-- Niezalogowany: widać `Zaloguj się` i `Załóż konto`. Wtedy procedura logowania ze SKILL.md
-  (poproś użytkownika, czekaj ~30 s × max 5 min; dalej `failed not_logged_in`).
+  Odczytaj saldo z `Depozyt` i zaraportuj sesję LasVegas:
+  `bash scripts/lv-api.sh session sts logged_in <saldo>` (liczba z kropką:
+  `130,50 zł` → `130.50`) — meldunek Kroku 0 SKILL.md; powtórz go po udanym
+  postawieniu, gdy saldo się zmieniło.
+- Niezalogowany: widać `Zaloguj się` i `Załóż konto`. Wtedy procedura logowania ze
+  SKILL.md (poproś użytkownika, czekaj ~30 s × max 5 min). Nadal niezalogowany →
+  `bash scripts/lv-api.sh session sts logged_out` i pomiń w tym cyklu zlecenia STS
+  z `loginBlocked: true` (`claim` odrzuciłby je 404); przy już claimniętym zleceniu
+  `failed not_logged_in`.
 - Odczytaj saldo z tekstu `Depozyt NNN,NN zł` (prawy górny róg) → `balanceBefore`.
 
 ## Krok 3: nawigacja do meczu

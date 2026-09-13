@@ -39,6 +39,18 @@ przed każdym kliknięciem „Postaw". Naruszenie którejkolwiek = brak postawie
 
 - Kill switch sprawdzony PRZED tym zleceniem (odpowiedź musi być świeża, nie z cache).
 - Claim na zleceniu wykonany (PLACING) — nie stawiaj nie-claimniętego zlecenia.
+- **Logowanie potwierdzone i zaraportowane (Krok 0 SKILL.md).** Zanim
+  klikniesz „Postaw", bukmacher tego zlecenia musi mieć świeży raport
+  `session <slug> logged_in` — świeżość to **30 minut** po stronie serwera
+  (`LOGIN_STATE_FRESH_MS`). Bramka kolejki flaguje zlecenia `logged_out` oraz
+  takie, których raport `logged_in` ma więcej niż 30 min, polem
+  `loginBlocked: true` (`claim` takich zleceń kończy się 404); dotyczy to
+  **superbet** i **sts** (`betclic-pl` i `betfan` nie są sondowane). Brak
+  raportu (`unknown`) zleceń nie flaguje, ale NIE zwalnia z kroku 5 —
+  zalogowanie na ekranie sprawdzasz zawsze. Gdy w trakcie biegu wykryjesz
+  wylogowanie (znika saldo/menu konta), NIE stawiaj i zaraportuj
+  `session <slug> logged_out`, nawet jeśli zlecenie przyszło z kolejki —
+  stan mógł się zmienić między pollem a postawieniem.
 - Audyt realnych pieniędzy = transkrypt sesji Hermesa (każde wywołanie narzędzia jest
   zapisane; `hermes --resume <id>`). Nagrań wideo nie ma — nie powołuj się na nie.
 

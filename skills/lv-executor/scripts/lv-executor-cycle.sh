@@ -13,9 +13,14 @@
 #    agent zgłosi brak logowania / brak środków — w trybie -q nikt nie czyta czatu.
 #
 # Użycie: lv-executor-cycle.sh                 # pełny cykl (launchd co 300 s)
+#         lv-executor-cycle.sh selfupdate      # wymuś aktualizację skilla z tapa (bez limitu godziny)
 #         lv-executor-cycle.sh ensure-chrome   # tylko podnieś przeglądarkę agenta
-#         lv-executor-cycle.sh login [url]     # podnieś przeglądarkę i otwórz buka do zalogowania
+#         lv-executor-cycle.sh login [superbet|sts|https://adres]  # otwórz buka i poczekaj na zalogowanie
 set -u
+
+# Argumenty wywołania skryptu. W `skill_selfupdate` `$@` to już argumenty FUNKCJI
+# (np. samo „force"), a restart przez `exec` ma odtworzyć całe wywołanie skryptu.
+SCRIPT_ARGS=("$@")
 
 HERMES_HOME="$HOME/.hermes"
 CHROME_APP="Google Chrome"
@@ -45,6 +50,15 @@ LV_PROVIDER="${LV_PROVIDER:-openrouter}"
 
 # Katalog tego skilla — używany do wołania lv-api.sh, jedynego klienta API.
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Samoaktualizacja z tapa. Instalator kładzie skill w ~/.hermes/skills/lv-executor
+# (stąd SKILL_DIR), a tap publikuje wersję w pliku VERSION obok tego skryptu.
+# Cykl sprawdza ją najwyżej raz na godzinę (UPDATE_INTERVAL), żeby autostart co
+# 5 minut nie tłukł w GitHub i nie instalował w kółko.
+UPDATE_URL="https://raw.githubusercontent.com/PNowakBG/lasvegas-skills/main/skills/lv-executor/VERSION"
+VERSION_FILE="$SKILL_DIR/VERSION"
+UPDATE_CHECK="$HERMES_HOME/lv-skill-update-check"
+UPDATE_INTERVAL=3600
 
 # Jedyne miejsce, przez które ten cykl rozmawia z API LasVegas.
 # lv_api <limit-czasu-sekundy> <komenda lv-api.sh> [argumenty...]
@@ -86,6 +100,69 @@ cdp_alive() { curl -sf --max-time 3 "$CDP/json/version" > /dev/null 2>&1; }
 notify() {
   # $1 = tytuł, $2 = treść. Powiadomienie systemowe macOS w sesji użytkownika.
   osascript -e "display notification \"$2\" with title \"$1\" sound name \"Basso\"" > /dev/null 2>&1 || true
+}
+
+# Ostrzeżenie nie może wyglądać jak zwykły log: żółte („orange") na tty,
+# a w pliku prefiks OSTRZEŻENIE — inaczej samoaktualizacja ginie w szumie cyklu.
+warn() {
+  printf '\033[33m%s\033[0m\n' "$*" >&2
+  log "OSTRZEŻENIE: $*"
+}
+
+# Żywy lock = trwa bieg agenta. Podmiana plików skilla w jego trakcie zostawiłaby
+# agenta w połowie starej procedury (część kroków z nowego pliku, część z pamięci
+# sesji), dlatego aktualizacja czeka na wolny cykl.
+lock_alive() {
+  local pid
+  pid=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# Sprawdzenie zdalnego VERSION i podmiana skilla. Brak sieci, nieosiągalny tap
+# albo błąd instalacji = cichy powrót (0): cykl działa dalej na tym, co ma.
+# Po UDANEJ instalacji `exec` restartuje bieg na nowym kodzie — nowy lokalny
+# VERSION == zdalny, więc kolejne sprawdzenie nic już nie zainstaluje (brak pętli).
+skill_selfupdate() {
+  local force="${1:-}" remote local_ver
+  remote=$(curl -fsS --max-time 10 "$UPDATE_URL" 2>/dev/null | tr -d '[:space:]') || true
+  if [ -z "$remote" ]; then
+    [ -n "$force" ] && echo "nie mogę sprawdzić zdalnej wersji (brak sieci?) — bez zmian"
+    return 0
+  fi
+  local_ver=$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null) || local_ver=""
+  if [ "$local_ver" = "$remote" ]; then
+    [ -n "$force" ] && echo "aktualne ($local_ver)"
+    return 0
+  fi
+  log "nowa wersja skilla: ${local_ver:-brak VERSION} → $remote — instaluję z tapa"
+  # Ta sama para komend co w instalatorze (install.sh, krok 3): tap add z || true,
+  # bo tap zwykle już jest; --force, bo bez niego stary skill zostaje na dysku.
+  "$HERMES_BIN" skills tap add PNowakBG/lasvegas-skills >/dev/null 2>&1 || true
+  if ! "$HERMES_BIN" skills install --force PNowakBG/lasvegas-skills/lv-executor; then
+    warn "instalacja skilla $remote nie udała się — zostaję na ${local_ver:-nieznanej wersji}"
+    return 0
+  fi
+  log "zaktualizowano skill do $remote — restart cyklu na nowym kodzie"
+  [ -n "$force" ] && echo "zaktualizowano do $remote"
+  # `${SCRIPT_ARGS[@]+…}` — macOS ma bash 3.2, a tam pusta tablica pod `set -u`
+  # kończy skrypt błędem (ten sam idiom co przy MODEL_ARGS niżej).
+  exec "$0" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+}
+
+# Wywoływane na starcie każdego cyklu. Znacznik czasu w $UPDATE_CHECK dławi
+# odpytywanie GitHuba do raz na godzinę. Tryb `selfupdate` (ręczny) omija throttle.
+selfupdate_check() {
+  local now last
+  lock_alive && return 0
+  now=$(date +%s)
+  last=$(cat "$UPDATE_CHECK" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $(( now - last )) -lt "$UPDATE_INTERVAL" ] && return 0
+  # Znacznik PRZED próbą: porażka instalacji nie zamieni cyklu w pętlę odpytywań
+  # co 5 minut, a udany `exec` nie sprawdzi wersji drugi raz od razu.
+  date +%s > "$UPDATE_CHECK" 2>/dev/null || true
+  skill_selfupdate || warn "samoaktualizacja nie udała się — cykl działa dalej"
+  return 0
 }
 
 ensure_chrome() {
@@ -131,24 +208,72 @@ queue_json() {
 }
 
 case "${1:-cycle}" in
+  selfupdate)
+    # Ręczne wymuszenie: bez throttle i zawsze z komunikatem — „aktualne (X)"
+    # albo „zaktualizowano do X" (po udanej instalacji exec restartuje ten tryb,
+    # co widać jako „aktualne").
+    skill_selfupdate force
+    exit $?
+    ;;
   ensure-chrome)
     ensure_chrome && echo "Chrome agenta działa: $CDP (profil $PROFILE_DIR)"
     exit $?
     ;;
   login)
+    # login [superbet|sts|https://adres] — otwiera okno logowania bukmachera
+    # i czeka na świadome potwierdzenie użytkownika. Samo otwarcie okna nie
+    # znaczy, że sesja jest ważna — dopiero ENTER użytkownika jest dowodem,
+    # a agent ma o tym zameldować LasVegas (Krok 0 SKILL.md).
+    # Walidacja PRZED dotknięciem przeglądarki: zła flaga/URL ma skończyć się
+    # instrukcją, nie uruchomieniem Chrome z `--headless`.
+    case "${2:-sts}" in
+      superbet) LOGIN_SLUG=superbet; LOGIN_URL="https://superbet.pl/logowanie" ;;
+      sts) LOGIN_SLUG=sts; LOGIN_URL="https://www.sts.pl" ;;
+      -*)
+        # Flaga zamiast adresu (`login --headless`) przeszłaby do `open … --args`
+        # i włączyła tryb Chrome, którego agent nie kontroluje.
+        echo "użycie: $0 login [superbet|sts|https://adres] — URL musi zaczynać się od https://" >&2
+        exit 2
+        ;;
+      https://*) LOGIN_SLUG=""; LOGIN_URL="$2" ;;
+      *)
+        # Zgodność: `login https://…` działało wcześniej; wszystko inne to literówka.
+        echo "użycie: $0 login [superbet|sts|https://adres] — URL musi zaczynać się od https://" >&2
+        exit 2
+        ;;
+    esac
     ensure_chrome || exit 1
     # Ta sama aplikacja + ten sam user-data-dir → Chrome przekazuje URL działającej
     # instancji agenta (process singleton) i kończy nowy proces.
-    open -na "$CHROME_APP" --args --user-data-dir="$PROFILE_DIR" "${2:-https://www.sts.pl}"
+    open -na "$CHROME_APP" --args --user-data-dir="$PROFILE_DIR" "$LOGIN_URL"
     echo "Zaloguj się w oknie przeglądarki agenta (profil $PROFILE_DIR) — to osobny Chrome, nie Twój zwykły."
+    # Bez tty (launchd, pipe) nie ma kogo zapytać o potwierdzenie — kończymy
+    # sukcesem, żeby nie blokować cyklu; logowanie zweryfikuje Krok 0 agenta.
+    if [[ -t 0 ]]; then
+      read -r -p "Zaloguj się, a potem wciśnij ENTER, żeby potwierdzić: " _ < /dev/tty || true
+      LV_API_SH="$SKILL_DIR/scripts/lv-api.sh"
+      if [[ -n "$LOGIN_SLUG" ]]; then
+        echo "Zgłoś zalogowanie: bash $LV_API_SH session $LOGIN_SLUG logged_in 130.50"
+      else
+        echo "Zgłoś zalogowanie agentowi: bash $LV_API_SH session <slug> logged_in 130.50"
+      fi
+      echo "(zamiast 130.50 podaj swoje saldo z konta jako liczbę z kropką; lv-api.sh sam wczyta token z $ENV_FILE)"
+    else
+      echo "Brak terminala (tty) — nie czekam na potwierdzenie. Zaloguj się, a agent sprawdzi to w Kroku 0."
+    fi
     exit 0
     ;;
   cycle) ;;
   *)
-    echo "użycie: $0 [cycle|ensure-chrome|login [url]]" >&2
+    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|login [superbet|sts|https://adres]]" >&2
     exit 2
     ;;
 esac
+
+# --- samoaktualizacja skilla (raz na godzinę, poza żywym biegiem) ------------
+# Przed lockiem, bo `skill_selfupdate` kończy się `exec` na nowym kodzie —
+# trap EXIT, który zwalnia lock, nie zdążyłby się wykonać.
+selfupdate_check
 
 # --- singleton lock (mkdir jest atomowe) -----------------------------------
 # Lock niesie PID cyklu. Do 2026-09-01 „stary" lock (>20 min) był kasowany

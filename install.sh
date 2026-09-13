@@ -99,21 +99,50 @@ hermes skills tap add PNowakBG/lasvegas-skills >/dev/null 2>&1 || true
 # --force: reinstalacja ma NAPRAWDĘ podmienić skill na nowszą wersję, inaczej
 # stare playbooki/scripts zostają i agent wciąż wykonuje przestarzałą procedurę.
 hermes skills install --force PNowakBG/lasvegas-skills/lv-executor
+say "Zainstalowana wersja skilla: $(cat "$HERMES_HOME/skills/lv-executor/VERSION" 2>/dev/null || echo 'nieznana')"
 
 # --- 4. Kod parowania → token ------------------------------------------------
 say "Wymieniam kod parowania na token urządzenia…"
-EXCHANGE=$(curl -fsS "$LV_API_URL_DEFAULT/api/executor/pairing-codes/$CODE") \
-  || die "Wymiana kodu nieudana — kod mógł wygasnąć (15 min). Wygeneruj nowy w LasVegas."
+# Kod parowania żyje 15 minut. Do 2026-09-13 wygasły kod kończył CAŁĄ instalację
+# (`die`) — a wystarczyło przepisać świeży kod z LasVegas. Teraz: maks. 3 próby,
+# a po każdej porażce prosimy o nowy kod z terminala (nie z pipe'a — patrz krok 0).
+EXCHANGE=""
+for attempt in 1 2 3; do
+  EXCHANGE=$(curl -fsS "$LV_API_URL_DEFAULT/api/executor/pairing-codes/$CODE") && break
+  say "Kod '$CODE' nie zadziałał — mógł wygasnąć (15 min). Próba $attempt z 3."
+  [[ "$attempt" -eq 3 ]] && die "Wymiana kodu nieudana po 3 próbach. Wygeneruj nowy kod w LasVegas (Podłącz agenta) i uruchom instalator ponownie."
+  read -r -p "Wklej NOWY kod z LasVegas (Podłącz agenta): " CODE < /dev/tty \
+    || die "Brak terminala do wpisania nowego kodu. Wygeneruj kod w LasVegas i uruchom: curl -fsSL <url>/install.sh | bash -s -- KOD_PAROWANIA"
+  [[ "$CODE" =~ ^[A-Z0-9]{10}$ ]] || die "Kod parowania ma 10 znaków (litery/cyfry, bez 0/O/1/I). Otrzymano: '$CODE'"
+done
 TOKEN=$(printf '%s' "$EXCHANGE" | sed -n 's/.*"token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 API_URL=$(printf '%s' "$EXCHANGE" | sed -n 's/.*"apiUrl"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 API_URL="${API_URL:-$LV_API_URL_DEFAULT}"
 [[ -n "$TOKEN" ]] || die "Serwer nie zwrócił tokenu. Wygeneruj nowy kod w LasVegas."
 
+# Smoke test, ZANIM instalator powie „gotowe": token zapisany ≠ token działający.
+# Bez tego pierwszy cykl padał dopiero w logu launchd, a użytkownik widział
+# świeżo „sparowanego" agenta, który nigdy nic nie postawił.
+say "Testuję token (kill-switch)…"
+curl -fsS --max-time 15 -H "Authorization: Bearer $TOKEN" \
+  "$API_URL/api/executor/kill-switch" >/dev/null \
+  || die "Token nie działa — kill-switch nie odpowiedział. Sparuj urządzenie ponownie w LasVegas (Podłącz agenta) i uruchom instalator jeszcze raz."
+
 ENV_FILE="$HERMES_HOME/.env"
 touch "$ENV_FILE"
-grep -q '^LV_EXECUTOR_TOKEN=' "$ENV_FILE" \
-  && sed -i.bak "s|^LV_EXECUTOR_TOKEN=.*|LV_EXECUTOR_TOKEN=$TOKEN|" "$ENV_FILE" \
-  || printf '\nLV_EXECUTOR_TOKEN=%s\nLV_API_URL=%s\n' "$TOKEN" "$API_URL" >> "$ENV_FILE"
+# Reinstalacja: podmieniamy OBA klucze. Do 2026-09-13 przy istniejącym tokenie
+# sed ruszał tylko LV_EXECUTOR_TOKEN, więc stary LV_API_URL zostawał i agent
+# pukał pod nieaktualny adres.
+if grep -q '^LV_EXECUTOR_TOKEN=' "$ENV_FILE"; then
+  sed -i.bak "s|^LV_EXECUTOR_TOKEN=.*|LV_EXECUTOR_TOKEN=$TOKEN|" "$ENV_FILE"
+  if grep -q '^LV_API_URL=' "$ENV_FILE"; then
+    sed -i.bak "s|^LV_API_URL=.*|LV_API_URL=$API_URL|" "$ENV_FILE"
+  else
+    printf 'LV_API_URL=%s\n' "$API_URL" >> "$ENV_FILE"
+  fi
+else
+  printf '\nLV_EXECUTOR_TOKEN=%s\nLV_API_URL=%s\n' "$TOKEN" "$API_URL" >> "$ENV_FILE"
+fi
 say "Token zapisany do $ENV_FILE (plik .env Hermsa — nikt go nie wkleja w czat)."
 
 # --- 5. Autostart cyklu co 5 minut ------------------------------------------

@@ -32,7 +32,7 @@ Cel: ustalić łańcuch stawiania bez postawienia niczego.
 ## DOKUMENTUJ
 
 Zapisz wynik przez `skill_manage write_file` jako `playbooks/<slug>.md`
-(`skill_manage` działa w katalogu skilla; slug = `superbet` | `sts` | `betclic` | `betfan`).
+(`skill_manage` działa w katalogu skilla; slug = `superbet` | `sts` | `betclic-pl` | `betfan`).
 
 Wymagane sekcje playbooka:
 

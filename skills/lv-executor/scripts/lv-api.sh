@@ -3,17 +3,37 @@
 # Ustawienia: LV_API_URL (default https://lv.ap2ju.com), LV_EXECUTOR_TOKEN (wymagany).
 set -euo pipefail
 
+# Token i URL: najpierw środowisko, a gdy tokenu nie ma — ~/.hermes/.env (ten sam
+# odczyt co load_env w lv-executor-cycle.sh). Dzięki temu wskazówka drukowana
+# przez `lv-executor-cycle.sh login` („Zgłoś zalogowanie: … session …") jest
+# wykonywalna od razu, bez eksportowania zmiennych w powłoce użytkownika.
+LV_ENV_FILE="${HERMES_HOME:-$HOME/.hermes}/.env"
+read_env_key() {
+  [ -f "$LV_ENV_FILE" ] || return 0
+  sed -n "s/^$1=//p" "$LV_ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ' || true
+}
+[[ -n "${LV_EXECUTOR_TOKEN:-}" ]] || LV_EXECUTOR_TOKEN="$(read_env_key LV_EXECUTOR_TOKEN)"
+[[ -n "${LV_API_URL:-}" ]] || LV_API_URL="$(read_env_key LV_API_URL)"
 LV_API_URL="${LV_API_URL:-https://lv.ap2ju.com}"
 BASE="$LV_API_URL/api/executor"
 
 # Limit czasu na pojedyncze żądanie. Domyślnie brak (tak jak dotąd — nie zmieniamy
 # zachowania istniejącym wywołaniom). Cykl agenta ustawia LV_API_TIMEOUT=15:
 # bez limitu zawieszone połączenie trzyma lock i blokuje kolejne przebiegi.
-auth_header() {
+#
+# Brak tokenu to TWARDY błąd wykrywany na STARCIE komendy (`require_token` przy
+# `case` niżej). Sprawdzenie NIE może stać w `auth_header`: to wywołanie stoi
+# w `$(…)`, więc `exit 2` kończyłoby tylko podpowłokę, komunikat leciał na
+# stderr, a curl poszedłby BEZ nagłówka (401 zamiast czytelnej instrukcji).
+require_token() {
   if [[ -z "${LV_EXECUTOR_TOKEN:-}" ]]; then
     echo "BŁĄD: brak LV_EXECUTOR_TOKEN. Zainstaluj agenta komendą z LasVegas (Podłącz agenta)." >&2
     exit 2
   fi
+}
+
+# Nagłówek buduje się dopiero po sprawdzeniu tokenu (`require_token`).
+auth_header() {
   printf 'Authorization: Bearer %s' "$LV_EXECUTOR_TOKEN"
 }
 
@@ -43,6 +63,15 @@ api_curl() {
 # Nazwane zmienne są tu warte swojej długości: przy pieniądzach „która to była
 # pozycja" nie może być pytaniem, na które trzeba odpowiadać z pamięci.
 cmd="${1:-help}"
+
+# Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
+# WYKONANIA komendy, a nie w `auth_header` — powód w komentarzu przy nim.
+case "$cmd" in
+  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session)
+    require_token
+    ;;
+esac
+
 case "$cmd" in
   orders)
     api_curl -H "$(auth_header)" "$BASE/queue"
@@ -143,11 +172,36 @@ case "$cmd" in
     # przez dostawcę — nie wymaga dotykania skryptów na maszynie.
     api_curl -H "$(auth_header)" "$BASE/agent-config"
     ;;
+  session)
+    # session <bookmaker> <logged_in|logged_out> [balance]
+    #
+    # Meldunek stanu logowania u bukmachera (Krok 0 procedury): LasVegas wie,
+    # że urządzenie ma świeżą sesję u tego buka, ZANIM pójdzie zlecenie.
+    # Bramka kolejki czyta ten raport: `logged_in` starzeje się po 30 min,
+    # `logged_out` flaguje zlecenia buka (`loginBlocked: true`, claim = 404)
+    # do następnego raportu. Sondowani
+    # bukmacherzy: superbet, sts — pozostali przechodzą bez raportu.
+    # Saldo opcjonalne, liczba z kropką: `130,50 zł` → 130.50.
+    bookmaker="${2:-}"
+    loginState="${3:-}"
+    [[ -n "$bookmaker" ]] || { echo "BŁĄD: session wymaga sluga bukmachera (np. sts, superbet)." >&2; exit 2; }
+    case "$loginState" in
+      logged_in) loggedIn=true ;;
+      logged_out) loggedIn=false ;;
+      *) echo "BŁĄD: stan logowania to logged_in albo logged_out (otrzymano: '${loginState}')." >&2; exit 2 ;;
+    esac
+    body=$(printf '{"bookmaker":"%s","loggedIn":%s' "$bookmaker" "$loggedIn")
+    [[ -n "${4:-}" ]] && body="$body,\"balance\":$4"
+    body="$body}"
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "$body" "$BASE/session"
+    ;;
   help|*)
     cat <<'EOF'
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
+  session <bookmaker> <logged_in|logged_out> [balance]   stan logowania u buka (Krok 0; bramka: superbet, sts)
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
   verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)
   claim <betId>                   podbij zlecenie (QUEUED → PLACING)
