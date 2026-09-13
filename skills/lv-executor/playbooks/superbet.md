@@ -41,7 +41,9 @@ z `loginBlocked: true` (claim = 404) — patrz Krok 0 SKILL.md.
   to placeholdery) — jeśli nie znajdziesz kwoty, raportuj `logged_in` BEZ salda,
   nie zgaduj liczby. Znalezioną kwotę (`NNN,NN zł` → `130.50`) podaj jako
   `balanceBefore`/`balanceAfter`.
-- Sesję zdobywa TYLKO użytkownik: otwórz `https://superbet.pl/logowanie`, poproś go
+- Sesję zdobywa TYLKO użytkownik: otwórz `https://superbet.pl/` i kliknij
+  `Zaloguj` w nagłówku (`.e2e-login`) — formularz to modal; **nie istnieje**
+  strona `/logowanie` (404, sprawdzone 2026-09-13). Poproś go
   w czacie i czekaj (sprawdzaj co ~30 s, max 5 min); po jego logowaniu ponów
   odczyt `localStorage` z metody pierwotnej.
 - Wykryta ważna sesja → `bash scripts/lv-api.sh session superbet logged_in <saldo>`

@@ -227,7 +227,11 @@ case "${1:-cycle}" in
     # Walidacja PRZED dotknięciem przeglądarki: zła flaga/URL ma skończyć się
     # instrukcją, nie uruchomieniem Chrome z `--headless`.
     case "${2:-sts}" in
-      superbet) LOGIN_SLUG=superbet; LOGIN_URL="https://superbet.pl/logowanie" ;;
+      # UWAGA (2026-09-13, produkcja): „/logowanie" NIE istnieje — Superbet
+      # rzuca tam własną stronę 404 („Spalony!"). Logowanie to modal pod
+      # przyciskiem „zaloguj" (.e2e-login) w nagłówku STRONY GŁÓWNEJ, więc
+      # otwieramy dom i user klika „zaloguj".
+      superbet) LOGIN_SLUG=superbet; LOGIN_URL="https://superbet.pl/" ;;
       sts) LOGIN_SLUG=sts; LOGIN_URL="https://www.sts.pl" ;;
       -*)
         # Flaga zamiast adresu (`login --headless`) przeszłaby do `open … --args`
@@ -247,17 +251,20 @@ case "${1:-cycle}" in
     # instancji agenta (process singleton) i kończy nowy proces.
     open -na "$CHROME_APP" --args --user-data-dir="$PROFILE_DIR" "$LOGIN_URL"
     echo "Zaloguj się w oknie przeglądarki agenta (profil $PROFILE_DIR) — to osobny Chrome, nie Twój zwykły."
+    if [[ "$LOGIN_SLUG" == "superbet" ]]; then
+      echo "Na superbet.pl kliknij „zaloguj” w nagłówku — formularz logowania to modal, nie osobna strona."
+    fi
     # Bez tty (launchd, pipe) nie ma kogo zapytać o potwierdzenie — kończymy
     # sukcesem, żeby nie blokować cyklu; logowanie zweryfikuje Krok 0 agenta.
     if [[ -t 0 ]]; then
-      read -r -p "Zaloguj się, a potem wciśnij ENTER, żeby potwierdzić: " _ < /dev/tty || true
+      read -r -p "Zaloguj się, a potem wciśnij ENTER (wpisany tekst jest ignorowany): " _ < /dev/tty || true
       LV_API_SH="$SKILL_DIR/scripts/lv-api.sh"
       if [[ -n "$LOGIN_SLUG" ]]; then
-        echo "Zgłoś zalogowanie: bash $LV_API_SH session $LOGIN_SLUG logged_in 130.50"
+        echo "Zgłoś zalogowanie: bash $LV_API_SH session $LOGIN_SLUG logged_in <saldo_opcjonalnie>"
       else
-        echo "Zgłoś zalogowanie agentowi: bash $LV_API_SH session <slug> logged_in 130.50"
+        echo "Zgłoś zalogowanie agentowi: bash $LV_API_SH session <slug> logged_in <saldo_opcjonalnie>"
       fi
-      echo "(zamiast 130.50 podaj swoje saldo z konta jako liczbę z kropką; lv-api.sh sam wczyta token z $ENV_FILE)"
+      echo "Saldo (jeśli podajesz) wpisz jako liczbę z kropką, np. 130.50 — NIE w miejscu ENTER-a wyżej; lv-api.sh sam wczyta token z $ENV_FILE"
     else
       echo "Brak terminala (tty) — nie czekam na potwierdzenie. Zaloguj się, a agent sprawdzi to w Kroku 0."
     fi
