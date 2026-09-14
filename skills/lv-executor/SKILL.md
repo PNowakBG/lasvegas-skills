@@ -27,6 +27,11 @@ decyzji inwestycyjnych. Skill to tylko ręce: poll → claim → weryfikacja →
 Wymaga: `LV_EXECUTOR_TOKEN` (token urządzenia z LasVegas) i włączonego
 real-profile browsing w Hermesie (`browser.use_real_profile: true`).
 
+Token przychodzi **wyłącznie ze środowiska procesu** — skrypty skilla nie czytają
+plików z sekretami. Wstrzykuje go `lv-executor-cycle.sh` (wpis usługi: launchd na
+macOS, systemd --user na Linuksie) albo sesja Hermesa, która przekazuje narzędziom
+własne środowisko.
+
 ## Procedure
 
 Na początku załaduj `references/verification-rules.md` (twarde reguły weryfikacji)

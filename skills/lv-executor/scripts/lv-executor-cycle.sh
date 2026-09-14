@@ -3,26 +3,33 @@
 #
 # 1) sprawdza kolejkę zleceń BEZ budzenia LLM (curl do API); pusta = koniec cyklu
 #    — wcześniej co 5 min startowała sesja Hermesa (~10 wywołań narzędzi), żeby
-#    przeczytać `[]`; 623 sesje w 3 dni, z czego ~620 pustych,
+#    przeczytać „[]"; 623 sesje w 3 dni, z czego ~620 pustych,
 # 2) pilnuje, że dedykowana przeglądarka bukmacherska żyje (CDP :9222) i startuje ją
-#    przez `open`, czyli POZA grupą procesów tego joba — launchd po wyjściu skryptu
-#    zabija całą grupę (AbandonProcessGroup=false), więc Chrome odpalany tu `&`
-#    ginął co cykl (86 restartów 31.08–01.09, okno „Nowa karta" co 5 min),
+#    POZA grupą procesów tego joba. macOS oddaje ją LaunchServices (open -n), bo
+#    launchd po wyjściu skryptu zabija całą grupę (AbandonProcessGroup=false);
+#    na Linuksie robi to setsid, a dopełnieniem jest KillMode=process w unicie
+#    systemd. Chrome odpalany wprost przez „&" ginął co cykl (86 restartów
+#    31.08–01.09, okno „Nowa karta" co 5 min),
 # 3) blokuje nakładanie się cykli (lock),
-# 4) odpala hermes chat ze skillem lv-executor i wysyła powiadomienie macOS, gdy
-#    agent zgłosi brak logowania / brak środków — w trybie -q nikt nie czyta czatu.
+# 4) odpala hermes chat ze skillem lv-executor i wysyła powiadomienie systemowe
+#    (osascript na macOS, notify-send na Linuksie), gdy agent zgłosi brak
+#    logowania / brak środków — w trybie -q nikt nie czyta czatu.
 #
-# Użycie: lv-executor-cycle.sh                 # pełny cykl (launchd co 300 s)
+# Użycie: lv-executor-cycle.sh                 # pełny cykl (launchd/systemd co 300 s)
 #         lv-executor-cycle.sh selfupdate      # wymuś aktualizację skilla z tapa (bez limitu godziny)
 #         lv-executor-cycle.sh ensure-chrome   # tylko podnieś przeglądarkę agenta
 #         lv-executor-cycle.sh login [superbet|sts|https://adres]  # otwórz buka i poczekaj na zalogowanie
 set -u
 
-# Argumenty wywołania skryptu. W `skill_selfupdate` `$@` to już argumenty FUNKCJI
-# (np. samo „force"), a restart przez `exec` ma odtworzyć całe wywołanie skryptu.
+# Argumenty wywołania skryptu. W „skill_selfupdate" „$@" to już argumenty FUNKCJI
+# (np. samo „force"), a restart przez „exec" ma odtworzyć całe wywołanie skryptu.
 SCRIPT_ARGS=("$@")
 
 HERMES_HOME="$HOME/.hermes"
+# System rozstrzyga w tym skrypcie dokładnie trzy rzeczy: czym startuje się
+# przeglądarka, czym leci powiadomienie i jaką składnię ma stat. Cała reszta
+# cyklu jest wspólna dla macOS i Linuksa.
+LV_OS="$(uname -s)"
 CHROME_APP="Google Chrome"
 PROFILE_DIR="$HERMES_HOME/lv-browser-profile"
 CDP="http://localhost:9222"
@@ -31,16 +38,19 @@ LOG="$HERMES_HOME/lv-executor.log"
 HEARTBEAT="$HERMES_HOME/lv-executor.heartbeat"
 LAST_RUN="$HERMES_HOME/lv-executor.last-run.log"
 ENV_FILE="$HERMES_HOME/.env"
-HERMES_BIN="$HOME/.local/bin/hermes"
+# Instalator Hermesa kładzie binarkę w ~/.local/bin, ale użytkownik mógł mieć ją
+# wcześniej z innego źródła (pakiet dystrybucji, /usr/local/bin) — bierzemy to, co
+# realnie stoi w PATH, a ścieżka domyślna zostaje jako ostatnia deska ratunku.
+HERMES_BIN="${HERMES_BIN:-$(command -v hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")}"
 
-# Model bierze się z LasVegas (`GET /api/executor/agent-config`), nie z tego pliku.
+# Model bierze się z LasVegas („GET /api/executor/agent-config"), nie z tego pliku.
 # Powód: do 2026-09-10 model był tu zahardkodowany, więc wycofanie modelu u
 # dostawcy docierało do zadań serwerowych, a egzekutor zostawał na starej nazwie,
 # dopóki ktoś nie poprawił tego skryptu ręcznie. Teraz zmiana modelu to jedna
 # zmienna po stronie LasVegas — bez edycji tapa i bez reinstalacji na maszynie.
 # LV_MODEL/LV_PROVIDER zostały jako RĘCZNE nadpisanie do diagnostyki (gdy
 # ustawione, wygrywają z odpowiedzią API i o nic nie pytamy). Puste = pytamy API,
-# a gdy API nie odpowie, nie przekazujemy `-m` wcale — Hermes użyje wtedy swojego
+# a gdy API nie odpowie, nie przekazujemy „-m" wcale — Hermes użyje wtedy swojego
 # model.default i łańcucha fallback_providers z config.yaml (darmowe modele Nous;
 # płatne wymagają kredytów, których konto nie ma).
 # Dobór modelu pod SESJE, nie pod jakość: bieg z dwoma zleceniami trwał 35–39 min
@@ -63,8 +73,8 @@ UPDATE_INTERVAL=3600
 # Jedyne miejsce, przez które ten cykl rozmawia z API LasVegas.
 # lv_api <limit-czasu-sekundy> <komenda lv-api.sh> [argumenty...]
 #
-# Sekrety przekazujemy JAWNIE, zamiast eksportować je globalnie: `export`
-# wpuściłby token urządzenia do środowiska `hermes chat` i do przeglądarki
+# Sekrety przekazujemy JAWNIE, zamiast eksportować je globalnie: „export"
+# wpuściłby token urządzenia do środowiska „hermes chat" i do przeglądarki
 # agenta, czyli tam, gdzie nie jest potrzebny.
 lv_api() {
   local timeout="$1"
@@ -76,7 +86,7 @@ lv_api() {
 }
 
 # Model egzekutora z LasVegas. Niepowodzenie = nie wiemy, jaki model → caller
-# pomija `-m` i oddaje wybór Hermesowi (lepsze niż wpisanie czegokolwiek na ślepo).
+# pomija „-m" i oddaje wybór Hermesowi (lepsze niż wpisanie czegokolwiek na ślepo).
 agent_config() {
   local json model provider
   json=$(lv_api 10 agent-config 2>/dev/null) || return 1
@@ -96,10 +106,29 @@ agent_config() {
 PAC='data:,function FindProxyForURL(url, host) { if (/(^|\.)(doubleclick\.net|snapchat\.com|google-analytics\.com|googletagmanager\.com|analytics\.google\.com|redditstatic\.com|tiktokw\.us|contentsquare\.net)$/.test(host)) { return "PROXY 127.0.0.1:9"; } return "DIRECT"; }'
 
 log() { echo "$(date '+%F %T') $*" >> "$LOG"; }
+
+# stat ma dwie niekompatybilne składnie: BSD (-f %m) na macOS, GNU (-c %Y) na
+# Linuksie. Bez tego rozgałęzienia wiek locka liczył się na Linuksie z pustej
+# wartości, a „set -u" kończył wtedy cykl błędem arytmetycznym zamiast czystym
+# pominięciem biegu.
+dir_mtime() {
+  if [ "$LV_OS" = "Darwin" ]; then
+    stat -f %m "$1" 2>/dev/null || echo 0
+  else
+    stat -c %Y "$1" 2>/dev/null || echo 0
+  fi
+}
 cdp_alive() { curl -sf --max-time 3 "$CDP/json/version" > /dev/null 2>&1; }
 notify() {
-  # $1 = tytuł, $2 = treść. Powiadomienie systemowe macOS w sesji użytkownika.
-  osascript -e "display notification \"$2\" with title \"$1\" sound name \"Basso\"" > /dev/null 2>&1 || true
+  # $1 = tytuł, $2 = treść. Log jest kanałem pewnym, powiadomienie tylko wygodnym:
+  # z timera bez sesji graficznej notify-send nie ma gdzie dostarczyć komunikatu,
+  # a sprawa wymagająca człowieka musi zostać zapisana tak czy inaczej.
+  log "POWIADOMIENIE: $1 — $2"
+  if [ "$LV_OS" = "Darwin" ]; then
+    osascript -e "display notification \"$2\" with title \"$1\" sound name \"Basso\"" > /dev/null 2>&1 || true
+  elif command -v notify-send > /dev/null 2>&1; then
+    notify-send "$1" "$2" > /dev/null 2>&1 || true
+  fi
 }
 
 # Ostrzeżenie nie może wyglądać jak zwykły log: żółte („orange") na tty,
@@ -120,7 +149,7 @@ lock_alive() {
 
 # Sprawdzenie zdalnego VERSION i podmiana skilla. Brak sieci, nieosiągalny tap
 # albo błąd instalacji = cichy powrót (0): cykl działa dalej na tym, co ma.
-# Po UDANEJ instalacji `exec` restartuje bieg na nowym kodzie — nowy lokalny
+# Po UDANEJ instalacji „exec" restartuje bieg na nowym kodzie — nowy lokalny
 # VERSION == zdalny, więc kolejne sprawdzenie nic już nie zainstaluje (brak pętli).
 skill_selfupdate() {
   local force="${1:-}" remote local_ver
@@ -142,15 +171,22 @@ skill_selfupdate() {
     warn "instalacja skilla $remote nie udała się — zostaję na ${local_ver:-nieznanej wersji}"
     return 0
   fi
+  # Kod wyjścia 0 nie znaczy, że pliki się zmieniły: skaner skilli Hermesa potrafi
+  # zablokować instalację i zwrócić zero. Bez tej kontroli cykl logował udaną
+  # aktualizację i restartował się przez „exec" na dokładnie tym samym kodzie.
+  if [ "$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null)" != "$remote" ]; then
+    warn "instalacja zwróciła sukces, ale na dysku dalej jest ${local_ver:-brak VERSION} zamiast $remote — zostaję na starym kodzie"
+    return 0
+  fi
   log "zaktualizowano skill do $remote — restart cyklu na nowym kodzie"
   [ -n "$force" ] && echo "zaktualizowano do $remote"
-  # `${SCRIPT_ARGS[@]+…}` — macOS ma bash 3.2, a tam pusta tablica pod `set -u`
+  # „${SCRIPT_ARGS[@]+…}" — macOS ma bash 3.2, a tam pusta tablica pod „set -u"
   # kończy skrypt błędem (ten sam idiom co przy MODEL_ARGS niżej).
   exec "$0" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
 }
 
 # Wywoływane na starcie każdego cyklu. Znacznik czasu w $UPDATE_CHECK dławi
-# odpytywanie GitHuba do raz na godzinę. Tryb `selfupdate` (ręczny) omija throttle.
+# odpytywanie GitHuba do raz na godzinę. Tryb „selfupdate" (ręczny) omija throttle.
 selfupdate_check() {
   local now last
   lock_alive && return 0
@@ -159,22 +195,64 @@ selfupdate_check() {
   case "$last" in ''|*[!0-9]*) last=0 ;; esac
   [ $(( now - last )) -lt "$UPDATE_INTERVAL" ] && return 0
   # Znacznik PRZED próbą: porażka instalacji nie zamieni cyklu w pętlę odpytywań
-  # co 5 minut, a udany `exec` nie sprawdzi wersji drugi raz od razu.
+  # co 5 minut, a udany „exec" nie sprawdzi wersji drugi raz od razu.
   date +%s > "$UPDATE_CHECK" 2>/dev/null || true
   skill_selfupdate || warn "samoaktualizacja nie udała się — cykl działa dalej"
   return 0
 }
 
+# Binarka przeglądarki na Linuksie. LV_CHROME_BIN nadpisuje wykrywanie: dystrybucje
+# nazywają ją różnie, a Flatpak i Snap chowają ją za własnym wrapperem.
+linux_chrome_bin() {
+  local candidate
+  if [ -n "${LV_CHROME_BIN:-}" ]; then
+    command -v "$LV_CHROME_BIN" 2>/dev/null && return 0
+    return 1
+  fi
+  for candidate in google-chrome-stable google-chrome chromium chromium-browser brave-browser; do
+    command -v "$candidate" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# Start okna agenta — te same flagi na obu systemach, różni się tylko sposób
+# oddania procesu systemowi. Chrome MUSI przeżyć koniec cyklu: na macOS oddaje go
+# LaunchServices (open -n), na Linuksie setsid wyprowadza go z grupy procesów
+# usługi. Samo setsid nie wystarcza pod systemd — unit ma KillMode=process,
+# inaczej menedżer sprząta cały cgroup razem z przeglądarką.
+chrome_spawn() {
+  if [ "$LV_OS" = "Darwin" ]; then
+    open -na "$CHROME_APP" --args "$@"
+    return $?
+  fi
+  local bin
+  bin=$(linux_chrome_bin) || {
+    log "BŁĄD: nie znalazłem Chrome ani Chromium. Zainstaluj przeglądarkę albo wskaż ją: LV_CHROME_BIN=/ścieżka/do/chrome"
+    return 1
+  }
+  # Bez sesji graficznej okno nie ma się gdzie otworzyć. Timer systemd startuje
+  # w środowisku menedżera użytkownika, które DISPLAY dostaje dopiero po imporcie
+  # ze środowiska sesji — lepiej powiedzieć to wprost, niż pozwolić Chrome paść
+  # w ciszy i zostawić cykl z pustym CDP.
+  if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+    log "BŁĄD: brak sesji graficznej (DISPLAY/WAYLAND_DISPLAY). Uruchom w sesji graficznej: systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY"
+    return 1
+  fi
+  if command -v setsid > /dev/null 2>&1; then
+    setsid nohup "$bin" "$@" > /dev/null 2>&1 &
+  else
+    nohup "$bin" "$@" > /dev/null 2>&1 &
+  fi
+  return 0
+}
+
 ensure_chrome() {
   cdp_alive && return 0
-  log "startuję Chrome (profil $PROFILE_DIR) przez open — poza grupą procesów cyklu"
-  # -n = nowa instancja (zwykły Chrome usera może działać obok, to inny user-data-dir),
-  # -a = aplikacja, --args = flagi dla Chrome. Proces należy do LaunchServices, nie do
-  # tego skryptu, więc przeżywa koniec cyklu, a jego stderr nie zaśmieca logu.
+  log "startuję Chrome (profil $PROFILE_DIR) poza grupą procesów cyklu"
   # Trzy flagi anty-throttling: okno agenta bywa zasłonięte/zminimalizowane, a Chrome
   # dławi wtedy timery i renderer — 01.09 co drugi browser_exec kończył się po 30 s
   # timeoutem na stronie STS. Flagi są standardem w automatyzacji, nie dają banera.
-  open -na "$CHROME_APP" --args \
+  chrome_spawn \
     --remote-debugging-port=9222 \
     --user-data-dir="$PROFILE_DIR" \
     --no-first-run --no-default-browser-check --hide-crash-restore-bubble \
@@ -182,7 +260,7 @@ ensure_chrome() {
     --disable-renderer-backgrounding \
     --window-size=1400,900 \
     --proxy-pac-url="$PAC" \
-    about:blank
+    about:blank || return 1
   # Zimny start na 8 GB RAM bywa dłuższy niż 20 s (04:10–04:44 siedem cykli pod rząd
   # „CDP nie odpowiada") — czekamy do 60 s.
   for _ in $(seq 1 60); do
@@ -193,9 +271,15 @@ ensure_chrome() {
   return 1
 }
 
+# Ten skrypt jest wpisem usługi i JEDYNYM miejscem w skillu, które sięga po
+# konfigurację z dysku — lv-api.sh dostaje wszystko podane w środowisku wywołania.
+# Pierwszeństwo ma środowisko, żeby dało się je wstrzyknąć z zewnątrz (eksport przy
+# diagnostyce, EnvironmentFile, gdy ktoś sobie taki unit dopisze). Gdy go nie ma,
+# czytamy konfigurację Hermesa — tak działa i launchd, i domyślny unit systemd,
+# bo żaden z nich nie parsuje tego pliku sam.
 load_env() {
-  LV_EXECUTOR_TOKEN=$(sed -n 's/^LV_EXECUTOR_TOKEN=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
-  LV_API_URL=$(sed -n 's/^LV_API_URL=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
+  [ -n "${LV_EXECUTOR_TOKEN:-}" ] || LV_EXECUTOR_TOKEN=$(sed -n 's/^LV_EXECUTOR_TOKEN=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
+  [ -n "${LV_API_URL:-}" ] || LV_API_URL=$(sed -n 's/^LV_API_URL=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
   LV_API_URL="${LV_API_URL:-https://lv.ap2ju.com}"
 }
 
@@ -225,7 +309,7 @@ case "${1:-cycle}" in
     # znaczy, że sesja jest ważna — dopiero ENTER użytkownika jest dowodem,
     # a agent ma o tym zameldować LasVegas (Krok 0 SKILL.md).
     # Walidacja PRZED dotknięciem przeglądarki: zła flaga/URL ma skończyć się
-    # instrukcją, nie uruchomieniem Chrome z `--headless`.
+    # instrukcją, nie uruchomieniem Chrome z „--headless".
     case "${2:-sts}" in
       # UWAGA (2026-09-13, produkcja): „/logowanie" NIE istnieje — Superbet
       # rzuca tam własną stronę 404 („Spalony!"). Logowanie to modal pod
@@ -234,14 +318,14 @@ case "${1:-cycle}" in
       superbet) LOGIN_SLUG=superbet; LOGIN_URL="https://superbet.pl/" ;;
       sts) LOGIN_SLUG=sts; LOGIN_URL="https://www.sts.pl" ;;
       -*)
-        # Flaga zamiast adresu (`login --headless`) przeszłaby do `open … --args`
+        # Flaga zamiast adresu („login --headless") przeszłaby do „open … --args"
         # i włączyła tryb Chrome, którego agent nie kontroluje.
         echo "użycie: $0 login [superbet|sts|https://adres] — URL musi zaczynać się od https://" >&2
         exit 2
         ;;
       https://*) LOGIN_SLUG=""; LOGIN_URL="$2" ;;
       *)
-        # Zgodność: `login https://…` działało wcześniej; wszystko inne to literówka.
+        # Zgodność: „login https://…" działało wcześniej; wszystko inne to literówka.
         echo "użycie: $0 login [superbet|sts|https://adres] — URL musi zaczynać się od https://" >&2
         exit 2
         ;;
@@ -249,7 +333,7 @@ case "${1:-cycle}" in
     ensure_chrome || exit 1
     # Ta sama aplikacja + ten sam user-data-dir → Chrome przekazuje URL działającej
     # instancji agenta (process singleton) i kończy nowy proces.
-    open -na "$CHROME_APP" --args --user-data-dir="$PROFILE_DIR" "$LOGIN_URL"
+    chrome_spawn --user-data-dir="$PROFILE_DIR" "$LOGIN_URL" || exit 1
     echo "Zaloguj się w oknie przeglądarki agenta (profil $PROFILE_DIR) — to osobny Chrome, nie Twój zwykły."
     if [[ "$LOGIN_SLUG" == "superbet" ]]; then
       echo "Na superbet.pl kliknij „zaloguj” w nagłówku — formularz logowania to modal, nie osobna strona."
@@ -278,7 +362,7 @@ case "${1:-cycle}" in
 esac
 
 # --- samoaktualizacja skilla (raz na godzinę, poza żywym biegiem) ------------
-# Przed lockiem, bo `skill_selfupdate` kończy się `exec` na nowym kodzie —
+# Przed lockiem, bo „skill_selfupdate" kończy się „exec" na nowym kodzie —
 # trap EXIT, który zwalnia lock, nie zdążyłby się wykonać.
 selfupdate_check
 
@@ -290,7 +374,7 @@ selfupdate_check
 # się tylko, gdy po procesie nie ma śladu (crash bez trap EXIT).
 if ! mkdir "$LOCK" 2>/dev/null; then
   lock_pid=$(cat "$LOCK/pid" 2>/dev/null || echo "")
-  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK") ))
+  lock_age=$(( $(date +%s) - $(dir_mtime "$LOCK") ))
   if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
     log "inny cykl jeszcze trwa (pid $lock_pid, ${lock_age}s) — pomijam"
     exit 0
@@ -345,9 +429,10 @@ log "kolejka: $ORDERS zleceń — budzę agenta (${LV_MODEL:-model domyślny Her
 # --- przeglądarka + cykl agenta -------------------------------------------------
 ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl pominięty"; exit 1; }
 
-# UWAGA: nie używać `exec` — zastąpiłby shell i trap EXIT nigdy by nie zwolnił locka.
-# `${ARR[@]+…}` zamiast `"${ARR[@]}"`: macOS ma bash 3.2, a tam pusta tablica pod
-# `set -u` kończy skrypt błędem „unbound variable" (model z API może nie przyjść).
+# UWAGA: nie używać „exec" — zastąpiłby shell i trap EXIT nigdy by nie zwolnił locka.
+# „${ARR[@]+…}" zamiast zwykłego rozwinięcia w cudzysłowach: macOS ma bash 3.2,
+# a tam pusta tablica pod
+# „set -u" kończy skrypt błędem „unbound variable" (model z API może nie przyjść).
 MODEL_ARGS=()
 [ -n "$LV_MODEL" ] && MODEL_ARGS=(-m "$LV_MODEL" --provider "$LV_PROVIDER")
 "$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \

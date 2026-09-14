@@ -8,9 +8,14 @@ HERMES_HOME="$HOME/.hermes"
 LV_API_URL_DEFAULT="https://lv.ap2ju.com"
 
 say() { printf '\n\033[1m[lv]\033[0m %s\n' "$*"; }
+warn() { printf '\n\033[33m[lv] UWAGA:\033[0m %s\n' "$*" >&2; }
 die() { printf '\n\033[1;31m[lv] BŁĄD:\033[0m %s\n' "$*" >&2; exit 1; }
 
 say "Instalator stacjonarnego agenta LasVegas — krok po kroku wszystko zrobi za Ciebie."
+
+# Brak podstawowego narzędzia ma skończyć się jednym zdaniem, a nie błędem powłoki
+# w połowie instalacji.
+command -v curl >/dev/null 2>&1 || die "Brakuje curl-a. Zainstaluj go i uruchom instalator ponownie."
 
 # --- 0. Kod parowania -------------------------------------------------------
 if [[ -z "$CODE" ]]; then
@@ -53,7 +58,10 @@ if ! grep -qE '^(OPENROUTER_API_KEY|NOUS_API_KEY|ANTHROPIC_API_KEY|OPENAI_API_KE
   # wykryj jego ślady, żeby nie pytać o klucz, który nie jest potrzebny.
   if ls "$HERMES_HOME"/auth*.json >/dev/null 2>&1 \
      || grep -qiE 'nous' "$HERMES_HOME/config.yaml" 2>/dev/null; then
-    say "Model skonfigurowany przez Nous Portal (Quick Setup) — pomijam pytanie o klucz."
+    # To ślad, nie dowód: config po nieukończonym Quick Setupie wygląda tak samo
+    # jak po udanym. Prawdziwe sprawdzenie robi pierwsza runda w kroku 6 i to ona
+    # decyduje, czy instalator ma prawo zameldować sukces.
+    say "Widzę ślady konfiguracji Nous Portal — nie pytam o klucz. Sprawdzę to realnie w kroku 6."
   else
     say "Nie widzę skonfigurowanego modelu AI. Dwie drogi:"
     echo "    a) uruchom hermes jeszcze raz i wybierz Quick Setup (Nous Portal), albo"
@@ -72,6 +80,28 @@ fi
 # Bez record_sessions: backend browser-use (browser_exec) nie nagrywa wideo — flaga
 # obiecywałaby audyt, którego nie ma. Audytem jest transkrypt sesji Hermesa.
 say "Konfiguruję przeglądarkę agenta (Twój profil, widoczne okno)…"
+# python3 z modułem yaml jest na macOS pewny, na świeżym Linuksie bywa go brak.
+# Pod „set -e" oznaczało to śmierć instalatora w połowie roboty, po kroku 1.
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  mkdir -p "$HERMES_HOME"
+  if [[ -f "$HERMES_HOME/config.yaml" ]]; then
+    warn "Brak python3 z modułem yaml — nie scalę istniejącego config.yaml. Dopisz w nim ręcznie:
+    browser:
+      backend: browser-use
+      use_real_profile: true
+      headed: true
+      real_profile_autoclose: true"
+  else
+    cat > "$HERMES_HOME/config.yaml" <<'YAML'
+browser:
+  backend: browser-use
+  use_real_profile: true
+  headed: true
+  real_profile_autoclose: true
+YAML
+    say "Zapisałem konfigurację przeglądarki (bez scalania — config.yaml jeszcze nie istniał)."
+  fi
+else
 python3 - "$HERMES_HOME" <<'PY'
 import os, sys, yaml
 home = sys.argv[1]
@@ -92,14 +122,33 @@ os.makedirs(home, exist_ok=True)
 yaml.safe_dump(cfg, open(path, "w"), sort_keys=False, allow_unicode=True)
 print("OK")
 PY
+fi
 
 # --- 3. Skill lv-executor z tego tapa ---------------------------------------
 say "Instaluję skilla lv-executor…"
+SKILL_DIR="$HERMES_HOME/skills/lv-executor"
+CYCLE="$SKILL_DIR/scripts/lv-executor-cycle.sh"
+SKILL_LOG="$(mktemp "${TMPDIR:-/tmp}/lv-skill-install.XXXXXX")"
 hermes skills tap add PNowakBG/lasvegas-skills >/dev/null 2>&1 || true
 # --force: reinstalacja ma NAPRAWDĘ podmienić skill na nowszą wersję, inaczej
 # stare playbooki/scripts zostają i agent wciąż wykonuje przestarzałą procedurę.
-hermes skills install --force PNowakBG/lasvegas-skills/lv-executor
-say "Zainstalowana wersja skilla: $(cat "$HERMES_HOME/skills/lv-executor/VERSION" 2>/dev/null || echo 'nieznana')"
+#
+# Kod wyjścia tej komendy NIE jest dowodem instalacji: 14.09 skaner skilli
+# zablokował skilla (werdykt DANGEROUS), a komenda zwróciła zero — instalator
+# poszedł dalej i zameldował sukces, zostawiając użytkownika bez żadnego pliku.
+# Dowodem jest istnienie skryptu cyklu.
+hermes skills install --force PNowakBG/lasvegas-skills/lv-executor 2>&1 | tee "$SKILL_LOG" || true
+if [[ ! -f "$CYCLE" ]]; then
+  if grep -qiE 'blocked|dangerous|quarantine' "$SKILL_LOG"; then
+    die "Skaner skilli Hermesa zablokował instalację (werdykt wyżej) — skill NIE został zainstalowany.
+    To błąd po stronie tapa, nie Twojej maszyny: zgłoś go, podając wypisane reguły.
+    Pełne wyjście: $SKILL_LOG"
+  fi
+  die "Instalacja skilla nie zostawiła pliku: $CYCLE
+    Pełne wyjście: $SKILL_LOG"
+fi
+rm -f "$SKILL_LOG"
+say "Zainstalowana wersja skilla: $(cat "$SKILL_DIR/VERSION" 2>/dev/null || echo 'nieznana')"
 
 # --- 4. Kod parowania → token ------------------------------------------------
 say "Wymieniam kod parowania na token urządzenia…"
@@ -164,7 +213,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
   <key>Label</key><string>com.lasvegas.lv-executor</string>
   <key>ProgramArguments</key><array>
     <string>/bin/bash</string>
-    <string>$HERMES_HOME/skills/lv-executor/scripts/lv-executor-cycle.sh</string>
+    <string>$CYCLE</string>
     <string>cycle</string>
   </array>
   <key>EnvironmentVariables</key><dict>
@@ -180,19 +229,31 @@ EOF
   launchctl unload "$PLIST" >/dev/null 2>&1 || true
   launchctl load "$PLIST"
   say "macOS: launchd zarejestrowany (cykl curl-only, LLM tylko przy zleceniach)."
-else
-  # Linux: cykl (lv-executor-cycle.sh) jest macOS-first (ensure_chrome przez `open`,
-  # launchd-specific) — dopóki nie będzie linuksowej ścieżki przeglądarki, timer
-  # woła sesję bezpośrednio. Przy realnej instalacji linuksowej przenieś cykl
-  # na xdg-open i wskaż timer na cycle-script jak w gałęzi Darwina wyżej.
+elif command -v systemctl >/dev/null 2>&1; then
+  # Linux dostaje dokładnie ten sam tani cykl co macOS: curl sprawdza kolejkę,
+  # a model budzi się dopiero przy niepustym wyniku. Do 14.09 timer wołał
+  # „hermes chat" wprost, czyli pełną sesję LLM co 5 minut także na pustej kolejce.
   mkdir -p "$HOME/.config/systemd/user"
+  LV_PATH="$HERMES_HOME/hermes-agent/venv/bin:$HERMES_HOME/node/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   cat > "$HOME/.config/systemd/user/lv-executor.service" <<EOF
 [Unit]
-Description=LasVegas executor (Hermes lv-executor cycle)
+Description=LasVegas executor (cykl lv-executor)
+After=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=$HOME/.local/bin/hermes chat --toolsets skills -q "/lv-executor wykonaj zaległe zlecenia"
+# Bieg z dwoma zleceniami trwa 20–40 minut, a domyślny TimeoutStartSec (90 s)
+# zabiłby agenta w połowie stawiania kuponu — z zleceniem zajętym w PLACING
+# i kuponem w nieznanym stanie u bukmachera. Limit czasu trzyma tu lock cyklu
+# i logika zleceń, nie menedżer usług.
+TimeoutStartSec=infinity
+Environment=PATH=$LV_PATH
+Environment=HERMES_HOME=$HERMES_HOME
+# Przeglądarka agenta musi przeżyć koniec cyklu. Przy domyślnym KillMode systemd
+# sprząta cały cgroup zakończonej usługi, czyli zabija Chrome razem z biegiem —
+# to ten sam problem, który na macOS rozwiązuje oddanie okna LaunchServices.
+KillMode=process
+ExecStart=/bin/bash $CYCLE cycle
 EOF
   cat > "$HOME/.config/systemd/user/lv-executor.timer" <<EOF
 [Unit]
@@ -206,13 +267,39 @@ OnUnitActiveSec=5min
 WantedBy=timers.target
 EOF
   systemctl --user daemon-reload
+  # Okno agenta jest widoczne (headed), więc usługa musi znać sesję graficzną.
+  # Menedżer użytkownika nie dziedziczy DISPLAY sam z siebie — bez importu Chrome
+  # nie ma się gdzie otworzyć, a cykl kończy się pustym CDP.
+  systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY >/dev/null 2>&1 || true
   systemctl --user enable --now lv-executor.timer
-  say "Linux: systemd --user timer zarejestrowany."
+  say "Linux: systemd --user timer zarejestrowany (cykl curl-only, LLM tylko przy zleceniach)."
+else
+  warn "Nie znalazłem systemd — autostart pomijam. Dodaj do crona wpis:
+    */5 * * * * /bin/bash $CYCLE cycle"
 fi
 
-# --- 6. Pierwsza runda -------------------------------------------------------
-say "Gotowe. Uruchamiam pierwszą rundę agenta…"
+# --- 6. Pierwsza runda = jedyny prawdziwy test modelu ------------------------
+say "Uruchamiam pierwszą rundę agenta…"
 say "Jeśli bukmacher poprosi o logowanie — agent otworzy okno i poprosi Cię o zalogowanie RAZ."
-hermes chat --toolsets skills -q "/lv-executor wykonaj zaległe zlecenia" || true
+RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/lv-first-run.XXXXXX")"
+hermes chat --toolsets skills -q "/lv-executor wykonaj zaległe zlecenia" 2>&1 | tee "$RUN_LOG" || true
+
+# Instalator nie ma prawa zameldować sukcesu, gdy agent nie ma czym myśleć.
+# Do 14.09 mówił „Agent pracuje w tle" także wtedy, gdy pierwsza runda kończyła się
+# „No inference provider configured" — a wtedy każdy kolejny cykl kończy się tak samo.
+if grep -qiE 'no inference provider|run .hermes model.' "$RUN_LOG"; then
+  rm -f "$RUN_LOG"
+  printf '\n\033[1;31m[lv] AGENT NIE MA MODELU\033[0m\n' >&2
+  {
+    echo "    Pliki i parowanie są na miejscu, ale Hermes nie ma skonfigurowanego dostawcy modelu,"
+    echo "    więc każdy cykl skończy się tym samym komunikatem. Wybierz jedną drogę:"
+    echo "      hermes model          # Quick Setup (Nous Portal) — darmowy OAuth w przeglądarce"
+    echo "      albo dopisz klucz:  echo 'OPENROUTER_API_KEY=…' >> $ENV_FILE"
+    echo "    Potem sprawdź: hermes chat -q \"powiedz ok\""
+    echo "    Autostart jest już zarejestrowany — po naprawie modelu ruszy sam."
+  } >&2
+  exit 1
+fi
+rm -f "$RUN_LOG"
 
 say "Instalacja zakończona. Agent pracuje w tle; status i kill switch: LasVegas → Podłącz agenta."
