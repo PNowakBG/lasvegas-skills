@@ -19,6 +19,7 @@
 #         lv-executor-cycle.sh selfupdate      # wymuś aktualizację skilla z tapa (bez limitu godziny)
 #         lv-executor-cycle.sh ensure-chrome   # tylko podnieś przeglądarkę agenta
 #         lv-executor-cycle.sh login [superbet|sts|https://adres]  # otwórz buka i poczekaj na zalogowanie
+#         lv-executor-cycle.sh session sts logged_in [saldo]      # zgłoś stan logowania ręcznie
 set -u
 
 # Argumenty wywołania skryptu. W „skill_selfupdate" „$@" to już argumenty FUNKCJI
@@ -73,9 +74,11 @@ UPDATE_INTERVAL=3600
 # Jedyne miejsce, przez które ten cykl rozmawia z API LasVegas.
 # lv_api <limit-czasu-sekundy> <komenda lv-api.sh> [argumenty...]
 #
-# Sekrety przekazujemy JAWNIE, zamiast eksportować je globalnie: „export"
-# wpuściłby token urządzenia do środowiska „hermes chat" i do przeglądarki
-# agenta, czyli tam, gdzie nie jest potrzebny.
+# Sekrety przekazujemy JAWNIE, zamiast eksportować je globalnie. Token trafia
+# dokładnie tam, gdzie jest potrzebny: do każdego wywołania lv-api.sh i — osobnym
+# przypisaniem inline, niżej — do sesji agenta, bo skill woła lv-api.sh z jej
+# wnętrza. Globalny „export" wpuściłby go dodatkowo do przeglądarki startowanej
+# przez chrome_spawn, gdzie nie służy niczemu.
 lv_api() {
   local timeout="$1"
   shift
@@ -278,8 +281,10 @@ ensure_chrome() {
 # czytamy konfigurację Hermesa — tak działa i launchd, i domyślny unit systemd,
 # bo żaden z nich nie parsuje tego pliku sam.
 load_env() {
-  [ -n "${LV_EXECUTOR_TOKEN:-}" ] || LV_EXECUTOR_TOKEN=$(sed -n 's/^LV_EXECUTOR_TOKEN=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
-  [ -n "${LV_API_URL:-}" ] || LV_API_URL=$(sed -n 's/^LV_API_URL=//p' "$ENV_FILE" | tail -1 | tr -d '"'"'"' ')
+  # Brak pliku to normalny stan przed instalacją — sed nie ma czym straszyć
+  # użytkownika, komunikat należy do wołającego.
+  [ -n "${LV_EXECUTOR_TOKEN:-}" ] || LV_EXECUTOR_TOKEN=$(sed -n 's/^LV_EXECUTOR_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
+  [ -n "${LV_API_URL:-}" ] || LV_API_URL=$(sed -n 's/^LV_API_URL=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
   LV_API_URL="${LV_API_URL:-https://lv.ap2ju.com}"
 }
 
@@ -342,21 +347,46 @@ case "${1:-cycle}" in
     # sukcesem, żeby nie blokować cyklu; logowanie zweryfikuje Krok 0 agenta.
     if [[ -t 0 ]]; then
       read -r -p "Zaloguj się, a potem wciśnij ENTER (wpisany tekst jest ignorowany): " _ < /dev/tty || true
-      LV_API_SH="$SKILL_DIR/scripts/lv-api.sh"
+      # ENTER jest dowodem zalogowania (tak stanowi procedura wyżej), więc meldunek
+      # do LasVegas idzie od razu — użytkownik nie ma po co przepisywać drugiej
+      # komendy. Do 14.09 drukowaliśmy wskazówkę z lv-api.sh, ale ten skrypt
+      # świadomie nie czyta już konfiguracji z dysku, więc wklejona wprost kończyła
+      # się „brak LV_EXECUTOR_TOKEN w środowisku".
       if [[ -n "$LOGIN_SLUG" ]]; then
-        echo "Zgłoś zalogowanie: bash $LV_API_SH session $LOGIN_SLUG logged_in <saldo_opcjonalnie>"
+        load_env
+        if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
+          echo "Nie znalazłem tokenu urządzenia — meldunek pominięty. Zainstaluj agenta komendą z LasVegas (Podłącz agenta)." >&2
+        elif lv_api 15 session "$LOGIN_SLUG" logged_in > /dev/null; then
+          echo "Zgłoszone do LasVegas: $LOGIN_SLUG zalogowany."
+          echo "Saldo (opcjonalne, odświeża lustro konta w LasVegas): $0 session $LOGIN_SLUG logged_in 130.50"
+        else
+          echo "Nie udało się zgłosić stanu do LasVegas. Powtórz: $0 session $LOGIN_SLUG logged_in" >&2
+        fi
       else
-        echo "Zgłoś zalogowanie agentowi: bash $LV_API_SH session <slug> logged_in <saldo_opcjonalnie>"
+        echo "Zgłoś zalogowanie: $0 session <slug> logged_in <saldo_opcjonalnie>"
       fi
-      echo "Saldo (jeśli podajesz) wpisz jako liczbę z kropką, np. 130.50 — NIE w miejscu ENTER-a wyżej; lv-api.sh sam wczyta token z $ENV_FILE"
     else
       echo "Brak terminala (tty) — nie czekam na potwierdzenie. Zaloguj się, a agent sprawdzi to w Kroku 0."
     fi
     exit 0
     ;;
+  session)
+    # Meldunek stanu logowania z terminala. Istnieje, bo lv-api.sh bierze token
+    # wyłącznie ze środowiska, a użytkownik nie ma powodu eksportować zmiennych
+    # ręcznie: wpis usługi zna konfigurację i podaje ją dalej.
+    # Użycie: lv-executor-cycle.sh session <slug> <logged_in|logged_out> [saldo]
+    load_env
+    if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
+      echo "BŁĄD: brak tokenu urządzenia w $ENV_FILE — zainstaluj agenta komendą z LasVegas (Podłącz agenta)." >&2
+      exit 2
+    fi
+    shift
+    lv_api 15 session "$@"
+    exit $?
+    ;;
   cycle) ;;
   *)
-    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|login [superbet|sts|https://adres]]" >&2
+    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|login [superbet|sts|https://adres]|session <slug> <logged_in|logged_out> [saldo]]" >&2
     exit 2
     ;;
 esac
@@ -435,7 +465,12 @@ ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl 
 # „set -u" kończy skrypt błędem „unbound variable" (model z API może nie przyjść).
 MODEL_ARGS=()
 [ -n "$LV_MODEL" ] && MODEL_ARGS=(-m "$LV_MODEL" --provider "$LV_PROVIDER")
-"$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+# Token i adres API w środowisku TEJ JEDNEJ komendy: skill woła lv-api.sh z sesji
+# Hermesa, a lv-api.sh świadomie nie czyta konfiguracji z dysku (skaner skilli
+# traktuje sięganie skilla do magazynu poświadczeń jak exfiltrację). Bez tego
+# agent zależałby od tego, czy Hermes sam eksportuje swój .env do narzędzi.
+LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
+  "$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury" \
   2>&1 | tee -a "$LOG" > "$LAST_RUN"
 rc=${PIPESTATUS[0]}
