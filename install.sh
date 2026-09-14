@@ -283,23 +283,58 @@ say "Uruchamiam pierwszą rundę agenta…"
 say "Jeśli bukmacher poprosi o logowanie — agent otworzy okno i poprosi Cię o zalogowanie RAZ."
 RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/lv-first-run.XXXXXX")"
 hermes chat --toolsets skills -q "/lv-executor wykonaj zaległe zlecenia" 2>&1 | tee "$RUN_LOG" || true
+RUN_RC=${PIPESTATUS[0]}
 
-# Instalator nie ma prawa zameldować sukcesu, gdy agent nie ma czym myśleć.
-# Do 14.09 mówił „Agent pracuje w tle" także wtedy, gdy pierwsza runda kończyła się
-# „No inference provider configured" — a wtedy każdy kolejny cykl kończy się tak samo.
+# Instalator nie ma prawa zameldować sukcesu, gdy pierwsza runda nie ruszyła.
+# Klas porażek jest kilka i KAŻDA ma inną naprawę. 14.09 bramka łapała wyłącznie
+# brak dostawcy — użytkownik dostał „Agent pracuje w tle" po HTTP 402 z OpenRoutera,
+# czyli po rundzie, która nie wykonała ani jednego wywołania narzędzia.
+run_problem=""
 if grep -qiE 'no inference provider|run .hermes model.' "$RUN_LOG"; then
-  rm -f "$RUN_LOG"
-  printf '\n\033[1;31m[lv] AGENT NIE MA MODELU\033[0m\n' >&2
-  {
-    echo "    Pliki i parowanie są na miejscu, ale Hermes nie ma skonfigurowanego dostawcy modelu,"
-    echo "    więc każdy cykl skończy się tym samym komunikatem. Wybierz jedną drogę:"
-    echo "      hermes model          # Quick Setup (Nous Portal) — darmowy OAuth w przeglądarce"
-    echo "      albo dopisz klucz:  echo 'OPENROUTER_API_KEY=…' >> $ENV_FILE"
-    echo "    Potem sprawdź: hermes chat -q \"powiedz ok\""
-    echo "    Autostart jest już zarejestrowany — po naprawie modelu ruszy sam."
-  } >&2
-  exit 1
+  run_problem="model"
+elif grep -qiE 'http 402|more credits|credits exhausted|billing or credits' "$RUN_LOG"; then
+  run_problem="kredyty"
+elif grep -qiE 'http 401|invalid api key|unauthorized' "$RUN_LOG"; then
+  run_problem="klucz"
+elif grep -qiE 'non-retryable|traceback \(most recent' "$RUN_LOG" || [[ "$RUN_RC" -ne 0 ]]; then
+  run_problem="inne"
 fi
-rm -f "$RUN_LOG"
+
+if [[ -n "$run_problem" ]]; then
+  printf '\n\033[1;31m[lv] PIERWSZA RUNDA AGENTA NIE PRZESZŁA\033[0m\n' >&2
+  {
+    case "$run_problem" in
+      model)
+        echo "    Hermes nie ma skonfigurowanego dostawcy modelu — każdy cykl skończy się tak samo."
+        echo "      hermes model        # Quick Setup (Nous Portal) — darmowy OAuth w przeglądarce"
+        echo "      albo dopisz klucz:  echo 'OPENROUTER_API_KEY=…' >> $ENV_FILE"
+        ;;
+      kredyty)
+        echo "    Dostawca odrzucił żądanie z powodu środków na koncie (HTTP 402)."
+        echo "    OpenRouter rezerwuje koszt po max_tokens, więc przy niemal pustym saldzie"
+        echo "    pada nawet krótka rozmowa — samo „mam kilka centów\" nie wystarczy."
+        echo "      doładowanie:        https://openrouter.ai/settings/credits"
+        echo "      albo darmowy model: hermes model"
+        ;;
+      klucz)
+        echo "    Dostawca odrzucił poświadczenia (HTTP 401) — klucz nieważny albo nie ten."
+        echo "      popraw wpis w $ENV_FILE, potem sprawdź: hermes chat -q \"powiedz ok\""
+        ;;
+    esac
+    if [[ "$run_problem" = "inne" ]]; then
+      echo "    Sesja agenta skończyła się błędem (kod $RUN_RC) — przyczyna w wyjściu powyżej."
+      echo "    Pliki, parowanie i autostart są na miejscu; kolejny cykl spróbuje ponownie."
+    else
+      echo "    Pliki, parowanie i autostart są na miejscu — po naprawie agent ruszy sam"
+      echo "    przy najbliższym cyklu (co 5 minut). Sprawdzenie: hermes chat -q \"powiedz ok\""
+    fi
+  } >&2
+  rm -f "$RUN_LOG"
+  # Porażka nierozstrzygnięta co do klasy nie musi znaczyć, że instalacja jest zła
+  # (bukmacher mógł np. oddać sterowanie człowiekowi) — tam zostaje ostrzeżenie.
+  [[ "$run_problem" = "inne" ]] || exit 1
+else
+  rm -f "$RUN_LOG"
+fi
 
 say "Instalacja zakończona. Agent pracuje w tle; status i kill switch: LasVegas → Podłącz agenta."
