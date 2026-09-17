@@ -211,6 +211,31 @@ for CRED_SLUG in sts superbet; do
   esac
 done
 
+# --- 4.6. Telegram (opcjonalnie): alerty i podsumowania cyklu przez Bot API ----
+# Własny bot użytkownika, tylko sendMessage — bez bramki Telegram Hermesa
+# (dwa procesy na getUpdates z jednym tokenem się gryzą). Przełącznik on/off
+# jest w LasVegas (Ustawienia → Powiadomienia); tu tylko poświadczenia bota.
+say "Telegram (opcjonalnie): agent wyśle Ci alerty (captcha, hasło, brak środków) i podsumowanie każdego cyklu."
+echo "    Potrzebny token bota (@BotFather) i Twój chat id. Zostają w $ENV_FILE. ENTER = pomijam."
+read -r -p "Token bota Telegram: " TG_TOKEN < /dev/tty || TG_TOKEN=""
+if [[ -n "$TG_TOKEN" ]]; then
+  read -r -p "Chat id odbiorcy: " TG_CHAT < /dev/tty || TG_CHAT=""
+  if [[ -n "$TG_CHAT" ]]; then
+    for pair in "LV_TELEGRAM_BOT_TOKEN=$TG_TOKEN" "LV_TELEGRAM_CHAT_ID=$TG_CHAT"; do
+      key="${pair%%=*}"
+      if grep -q "^$key=" "$ENV_FILE"; then
+        sed -i.bak "s|^$key=.*|$pair|" "$ENV_FILE"
+      else
+        printf '%s\n' "$pair" >> "$ENV_FILE"
+      fi
+    done
+    say "Telegram zapisany — pierwsza wiadomość przyjdzie po najbliższym cyklu z pracą (albo przy pierwszym alercie)."
+  else
+    say "Brak chat id — pomijam Telegram."
+  fi
+fi
+unset TG_TOKEN TG_CHAT
+
 # --- 5. Autostart cyklu co 5 minut ------------------------------------------
 # launchd/systemd odpala CYKL (curl-only), nie sesję Hermesa: pusta kolejka ma
 # kosztować jedno żądanie HTTP, nie pełne wywołanie LLM. Historyczna lekcja:

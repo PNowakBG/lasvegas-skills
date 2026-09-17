@@ -171,6 +171,23 @@ if (Test-Path $skillMd) {
 if ($skillVersion) { Say "Skill lv-executor: v$skillVersion" } else { Say "Skill lv-executor: zainstalowany." }
 Say "Sprawdź urządzenie w LasVegas → Podłącz agenta."
 
+# --- 4.6. Telegram (opcjonalnie): alerty i podsumowania cyklu przez Bot API ----
+Say "Telegram (opcjonalnie): token bota (@BotFather) i Twój chat id — zostają w .env Hermesa. ENTER = pomijam."
+$tgToken = Read-Host "Token bota Telegram"
+if ($tgToken) {
+  $tgChat = Read-Host "Chat id odbiorcy"
+  if ($tgChat) {
+    $envText = Get-Content -Path $envFile -Raw -Encoding UTF8
+    foreach ($pair in @(@("LV_TELEGRAM_BOT_TOKEN", $tgToken), @("LV_TELEGRAM_CHAT_ID", $tgChat))) {
+      $k = $pair[0]; $v = $pair[1]
+      if ($envText -match "(?m)^$k=") { $envText = [regex]::Replace($envText, "(?m)^$k=[^\r\n]*", "$k=$v") }
+      else { $envText = $envText.TrimEnd([char[]]"`r`n") + "`r`n$k=$v`r`n" }
+    }
+    [IO.File]::WriteAllText($envFile, $envText, (New-Object System.Text.UTF8Encoding($false)))
+    Say "Telegram zapisany — alerty i podsumowania przyjdą po najbliższym cyklu z pracą."
+  }
+}
+
 # --- 5. Scheduled task co 5 minut --------------------------------------------
 Say "Rejestruję uruchamianie agenta co 5 minut + po restarcie komputera…"
 $hermesExe = $hermesCmd.Source

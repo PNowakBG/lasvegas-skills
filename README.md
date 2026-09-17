@@ -59,6 +59,14 @@ sprawę Tobie: melduje powód do LasVegas (powiadomienie + baner), a
 `lv-executor-cycle.sh login sts` otwiera okno agenta, w którym logujesz się raz.
 Sesja zostaje w profilu agenta.
 
+## Telegram
+
+Dopisz do `~/.hermes/.env`: `LV_TELEGRAM_BOT_TOKEN=…` i `LV_TELEGRAM_CHAT_ID=…`.
+Agent wyśle alerty (captcha, kod SMS, złe hasło, brak środków) i podsumowanie
+każdego cyklu przez Bot API — samo `sendMessage`, bez `getUpdates`, więc nie
+przeszkadza Twojemu botowi na long pollingu ani nie wymaga bramki Hermesa.
+Przełącznik on/off: LasVegas → Ustawienia → Powiadomienia.
+
 ## Wyłączanie awaryjne (kill switch)
 
 W LasVegas: reguły auto-place per bukmacher → wyłącz. Kolejka natychmiast przestaje
