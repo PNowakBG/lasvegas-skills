@@ -152,34 +152,14 @@ Say "Token zapisany do $envFile (plik .env Hermesa — nikt go nie wkleja w czat
 # $hermesHome\lv-bookmakers.env. Hasło zostaje na tym komputerze — nie idzie
 # do LasVegas ani do modelu. Pominięcie = agent poprosi o zalogowanie w oknie.
 Say "Poświadczenia bukmacherów (opcjonalnie): agent zaloguje się sam, gdy je zapiszesz."
-$credFile = Join-Path $hermesHome "lv-bookmakers.env"
-$credText = ""
-if (Test-Path $credFile) { $credText = Get-Content -Path $credFile -Raw -Encoding UTF8 }
-if (-not $credText) { $credText = "" }
+Say "Poprawka później (np. złe hasło): ta sama komenda, nadpisuje wpis bukmachera:"
+$credScript = Join-Path $hermesHome "skills\lv-executor\scripts\lv-credentials.ps1"
+Write-Host "    & `"$credScript`" sts      (albo: superbet)"
 foreach ($credSlug in @("sts", "superbet")) {
   $answer = Read-Host "Zapisać login i hasło do $credSlug? [t/N]"
   if ($answer -notmatch '^(t|tak|y)$') { continue }
-  $credLogin = Read-Host "Login/e-mail do $credSlug"
-  $securePass = Read-Host "Hasło do $credSlug (bez echa)" -AsSecureString
-  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePass)
-  try { $credPass = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
-  finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
-  if (-not $credLogin -or -not $credPass) { Say "Pomijam $credSlug — pusty login albo hasło."; continue }
-  $keyPrefix = "LV_" + $credSlug.ToUpper()
-  $credText = [regex]::Replace($credText, "(?m)^$keyPrefix" + "_(LOGIN|PASSWORD)=[^\r\n]*\r?\n?", "")
-  $credText = $credText.TrimEnd([char[]]"`r`n") + "`r`n$keyPrefix" + "_LOGIN=$credLogin`r`n$keyPrefix" + "_PASSWORD=$credPass`r`n"
-  $credPass = $null
-}
-if ($credText.Trim()) {
-  [IO.File]::WriteAllText($credFile, $credText.TrimStart([char[]]"`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-  # Tylko bieżący użytkownik czyta plik (odpowiednik chmod 600).
-  $acl = Get-Acl $credFile
-  $acl.SetAccessRuleProtection($true, $false)
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-    [System.Security.Principal.WindowsIdentity]::GetCurrent().Name, "FullControl", "Allow")
-  $acl.SetAccessRule($rule)
-  Set-Acl $credFile $acl
-  Say "Poświadczenia zapisane w $credFile (tylko Ty masz do niego dostęp)."
+  if (-not (Test-Path $credScript)) { Say "Brak $credScript — skill nie zainstalował się poprawnie, pomijam."; break }
+  try { & $credScript $credSlug } catch { Say "Poświadczenia $credSlug nie zapisane: $($_.Exception.Message)" }
 }
 
 $skillMd = Join-Path $hermesHome "skills\lv-executor\SKILL.md"
