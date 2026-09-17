@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.7
+version: 1.5.8
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -211,6 +211,13 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - Windows: resync real-profile wymaga CAŁKOWITEJ zamkniętej przeglądarki
   (też instancja tray/background). Jeśli sesja wychodzi niezalogowana — najpierw
   to sprawdź.
+- **Pole stawki bywa WSTĘPNIE WYPEŁNIONE** (Superbet: ostatnia/proponowana
+  kwota, 17.09: 45,22 zł; STS: „ulubiona stawka” 12,43 zł). Zawsze wyczyść pole,
+  wpisz `stake`, odczytaj kwotę z KUPONU („STAWKA … PLN”) i z przycisku
+  („Postaw 10,00 zł”). Inna kwota niż `stake` → NIE klikaj i powtórz wpisanie;
+  nigdy nie raportuj `placed` z inną stawką niż w zleceniu — serwer zatrzymuje
+  wtedy automat u tego buka i alarmuje użytkownika (17.09: kupon za 45,22 zł
+  zamiast 10 zł).
 - Playbook uzupełniaj PO obsłużeniu wszystkich zleceń z kolejki (przed
   wylogowaniem, krok 10), nigdy między zleceniami: 17.09 zapis playbooka
   Superbet zabrał 29 s w środku biegu, a każde zlecenie czeka na to samo okno
