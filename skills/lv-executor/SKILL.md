@@ -139,6 +139,18 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    Zlecenie trafi wtedy na listę weryfikacji (`verifications`) — rozstrzygnij je
    przy najbliższym biegu zanim cokolwiek postawisz (punkt 0 — weryfikacje zaległe).
 
+10. **Wylogowanie po pracy.** Bukmacherzy liczą CZAS zalogowania do dziennego
+    limitu gry (STS: „Osiągnięto dzienny limit czasu gry" po kilku sesjach
+    agenta — 01.09), więc sesja nie ma prawa wisieć między cyklami. Na macOS
+    i Linuksie robi to cykl po Twoim biegu. Gdy pracujesz bez cyklu (Windows,
+    wywołanie ręczne), po ostatnim zleceniu dla KAŻDEGO buka, u którego byłeś
+    zalogowany: `python3 scripts/lv-login.py <slug> --logout` (Windows:
+    `python scripts\lv-login.py <slug> --logout`), a po `"state":"logged_out"`
+    zamelduj `bash scripts/lv-api.sh session <slug> logged_out "" session_closed "wylogowano po cyklu"`.
+    To wylogowanie jest celowe — LasVegas nie robi z niego alarmu, a przy
+    następnym zleceniu logujesz się ponownie skryptem (Krok 0). Nie zostawiaj
+    sesji „na zapas".
+
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - NIE otwieraj nowych kart na całość biegu — zlecenie otwieraj przez `goto_url`
   w istniejącej karcie przeglądarki; `new_tab` tylko gdy nie ma żadnej karty.

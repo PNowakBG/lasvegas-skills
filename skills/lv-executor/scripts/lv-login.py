@@ -8,16 +8,20 @@ formularza przez harness browser-use (ten sam, którym agent steruje przeglądar
 i wypisuje na stdout WYŁĄCZNIE wynik jako JSON — bez loginu, bez hasła.
 
 Użycie:
-  lv-login.py <sts|superbet> [--check-only] [--cdp http://localhost:9222]
+  lv-login.py <sts|superbet> [--check-only] [--logout] [--cdp http://localhost:9222]
+
+--logout: zamyka sesję u buka (przycisk „Wyloguj”, w odwodzie wyczyszczenie danych
+witryny). Bukmacherzy liczą CZAS zalogowania do dziennego limitu gry, więc sesja
+trzymana między cyklami zjada limit sama — cykl loguje przed pracą i wylogowuje po.
 
 Wyjście (stdout, jedna linia JSON):
   {"bookmaker":"sts","state":"logged_in","balance":555.19,"reason":null,"detail":null}
   {"bookmaker":"sts","state":"logged_out","reason":"captcha","detail":"…","screenshot":"…"}
 
-Kody wyjścia: 0 = zalogowany, 1 = niezalogowany (reason w JSON), 2 = błąd użycia.
-Powody `logged_out` (te same kody rozumie LasVegas i baner uwagi):
+Kody wyjścia: 0 = zalogowany (przy --logout: wylogowany), 1 = nie (reason w JSON),
+2 = błąd użycia. Powody `logged_out` (te same kody rozumie LasVegas i baner uwagi):
   no_credentials, bad_credentials, captcha, two_factor, login_form_not_found,
-  login_error, not_logged_in (tylko --check-only).
+  login_error, not_logged_in (tylko --check-only), session_closed (po --logout).
 
 Poświadczenia w pliku (chmod 600), klucze:
   LV_STS_LOGIN=…        LV_STS_PASSWORD=…
@@ -108,6 +112,7 @@ import json, os, re, time
 
 SLUG = os.environ.get("LV_LOGIN_SLUG", "")
 CHECK_ONLY = os.environ.get("LV_LOGIN_CHECK_ONLY") == "1"
+MODE = os.environ.get("LV_LOGIN_MODE", "login")
 USER = os.environ.get("LV_LOGIN_USER", "")
 PASS = os.environ.get("LV_LOGIN_PASS", "")
 SHOT = os.environ.get("LV_LOGIN_SHOT", "")
@@ -152,6 +157,48 @@ def click_by_text(pattern, tag="button"):
         ".find(e => re.test((e.innerText || e.textContent || '').trim()) && e.getBoundingClientRect().width > 0);"
         " if (!b) return false; b.click(); return true; })()" % (json.dumps(pattern), tag)
     )
+
+def click_by_label(pattern, selector="button, a, [role=button], [role=menuitem]"):
+    # Tekst ALBO aria-label (menu konta bywa samą ikoną z etykietą dostępności).
+    return js_bool(
+        "(() => { const re = new RegExp(%s, 'i'); const b = [...document.querySelectorAll('%s')]"
+        ".find(e => (re.test((e.innerText || e.textContent || '').trim()) || re.test(e.getAttribute('aria-label') || ''))"
+        " && e.getBoundingClientRect().width > 0); if (!b) return false; b.click(); return true; })()" % (json.dumps(pattern), selector)
+    )
+
+def click_logout_control():
+    # 1) widoczny „Wyloguj"; 2) otwórz menu konta i spróbuj ponownie.
+    if click_by_label("wyloguj"):
+        return True
+    for pattern in ("menu użytkownika", "moje konto", "^konto$", "profil", "depozyt"):
+        if click_by_label(pattern):
+            time.sleep(0.8)
+            if click_by_label("wyloguj"):
+                return True
+    return False
+
+def clear_site_data(origins):
+    # Odwód, gdy przycisku nie ma: wyczyść ciasteczka i storage witryny — sesja
+    # po stronie przeglądarki znika, a przy następnym wejściu buk widzi gościa.
+    ok = False
+    for origin in origins:
+        try:
+            cdp("Storage.clearDataForOrigin", origin=origin,
+                storageTypes="cookies,local_storage,session_storage,indexeddb,cache_storage")
+            ok = True
+        except Exception:
+            pass
+    if not ok:
+        try:
+            cdp("Network.clearBrowserCookies")
+            ok = True
+        except Exception:
+            pass
+    try:
+        js("localStorage.clear(); sessionStorage.clear(); true")
+    except Exception:
+        pass
+    return ok
 
 def dismiss_cookies():
     for label in ("^Akceptuj wszystkie", "^Akceptuję", "^Zgadzam się", "^Akceptuj$"):
@@ -243,6 +290,25 @@ def sts_login():
     err = error_text()
     return out("logged_out", "login_error", err or "po 40 s brak salda i brak komunikatu")
 
+def sts_logout():
+    goto_url("https://www.sts.pl/")
+    wait_for_load(20)
+    wait_until("!!document.body && document.body.innerText.length > 200", 20)
+    time.sleep(1.5)
+    dismiss_cookies()
+    sts_dismiss_welcome()
+    if not js_bool(STS_LOGGED):
+        return out("logged_out", "session_closed", "sesja była już zamknięta")
+    if click_logout_control() and wait_until("!(" + STS_LOGGED + ")", 15):
+        return out("logged_out", "session_closed", "wylogowano przyciskiem")
+    clear_site_data(["https://www.sts.pl", "https://sts.pl"])
+    goto_url("https://www.sts.pl/")
+    wait_for_load(20)
+    time.sleep(2.0)
+    if not js_bool(STS_LOGGED):
+        return out("logged_out", "session_closed", "wylogowano przez wyczyszczenie danych witryny")
+    return out("logged_in", "logout_failed", "po próbie wylogowania nadal widać saldo")
+
 # ---------------- SUPERBET ----------------
 SB_LOGGED = "(() => { try { const u = JSON.parse(localStorage.getItem('user') || 'null'); return !!(u && u.value != null); } catch (e) { return false; } })()"
 SB_LOGGED_OUT = "!![...document.querySelectorAll('.e2e-login')].find(b => b.getBoundingClientRect().width > 0)"
@@ -283,23 +349,50 @@ def sb_login():
     err = error_text()
     return out("logged_out", "login_error", err or "po 40 s brak sesji w localStorage i brak komunikatu")
 
+def sb_logout():
+    goto_url("https://superbet.pl/")
+    wait_for_load(20)
+    wait_until("!!document.body && document.body.innerText.length > 200", 20)
+    time.sleep(1.5)
+    dismiss_cookies()
+    if not js_bool(SB_LOGGED):
+        return out("logged_out", "session_closed", "sesja była już zamknięta")
+    if click_logout_control() and wait_until("!(" + SB_LOGGED + ")", 15):
+        return out("logged_out", "session_closed", "wylogowano przyciskiem")
+    clear_site_data(["https://superbet.pl", "https://www.superbet.pl"])
+    goto_url("https://superbet.pl/")
+    wait_for_load(20)
+    time.sleep(2.0)
+    if not js_bool(SB_LOGGED):
+        return out("logged_out", "session_closed", "wylogowano przez wyczyszczenie danych witryny")
+    return out("logged_in", "logout_failed", "po próbie wylogowania sesja w localStorage nadal żyje")
+
 try:
     ensure_real_tab()
 except Exception:
     pass
 try:
-    if SLUG == "sts":
-        sts_login()
-    elif SLUG == "superbet":
-        sb_login()
-    else:
+    if SLUG not in ("sts", "superbet"):
         out("logged_out", "login_error", "nieznany bukmacher %s" % SLUG)
+    elif MODE == "logout":
+        (sts_logout if SLUG == "sts" else sb_logout)()
+    elif SLUG == "sts":
+        sts_login()
+    else:
+        sb_login()
 except Exception as exc:
     out("logged_out", "login_error", "wyjątek harnessu: %s" % str(exc)[:200])
 '''
 
 
-def run_harness(slug: str, check_only: bool, cdp: str, user: str | None, password: str | None) -> tuple[dict | None, str]:
+def run_harness(
+    slug: str,
+    mode: str,
+    check_only: bool,
+    cdp: str,
+    user: str | None,
+    password: str | None,
+) -> tuple[dict | None, str]:
     cli = find_browser_use()
     if not cli:
         return None, "brak CLI browser-use (zainstaluj: uv tool install browser-use)"
@@ -315,6 +408,7 @@ def run_harness(slug: str, check_only: bool, cdp: str, user: str | None, passwor
     env["BU_CDP_URL"] = cdp
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
     env["LV_LOGIN_SLUG"] = slug
+    env["LV_LOGIN_MODE"] = mode
     env["LV_LOGIN_CHECK_ONLY"] = "1" if check_only else "0"
     env["LV_LOGIN_USER"] = user or ""
     env["LV_LOGIN_PASS"] = password or ""
@@ -353,18 +447,29 @@ def main(argv: list[str]) -> int:
         return 2
     slug = args[0]
     check_only = "--check-only" in flags
+    mode = "logout" if "--logout" in flags else "login"
     cdp = os.environ.get("BU_CDP_URL") or DEFAULT_CDP
     for flag in flags:
         if flag.startswith("--cdp="):
             cdp = flag.split("=", 1)[1]
     credentials_path = Path(os.environ.get("LV_LOGIN_FILE") or DEFAULT_CREDENTIALS)
-    user, password = (None, None) if check_only else read_credentials(credentials_path, slug)
+    user, password = (
+        (None, None) if (check_only or mode == "logout") else read_credentials(credentials_path, slug)
+    )
 
     started = time.time()
-    result, error = run_harness(slug, check_only, cdp, user, password)
+    result, error = run_harness(slug, mode, check_only, cdp, user, password)
     if result is None:
+        # Przy --logout nie wiemy, czy sesja żyje — meldujemy zalogowanie, żeby
+        # cykl nie zgłosił fałszywego „sesja zamknięta".
         return emit(
-            {"bookmaker": slug, "state": "logged_out", "reason": "login_error", "detail": error, "balance": None},
+            {
+                "bookmaker": slug,
+                "state": "logged_in" if mode == "logout" else "logged_out",
+                "reason": "logout_failed" if mode == "logout" else "login_error",
+                "detail": error,
+                "balance": None,
+            },
             1,
         )
     result.setdefault("balance", None)
@@ -375,7 +480,8 @@ def main(argv: list[str]) -> int:
         result["detail"] = (
             f"brak {BOOKMAKERS[slug]['login_key']}/{BOOKMAKERS[slug]['password_key']} w {credentials_path}"
         )
-    return emit(result, 0 if result.get("state") == "logged_in" else 1)
+    wanted = "logged_out" if mode == "logout" else "logged_in"
+    return emit(result, 0 if result.get("state") == wanted else 1)
 
 
 if __name__ == "__main__":
