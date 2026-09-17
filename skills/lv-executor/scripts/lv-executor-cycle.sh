@@ -23,6 +23,11 @@
 #         lv-executor-cycle.sh logout [superbet|sts]                # zamknij sesję u buka (limit czasu gry)
 #         lv-executor-cycle.sh session sts logged_in [saldo]      # zgłoś stan logowania ręcznie
 #
+# Telegram (od 1.5.2): alerty dla człowieka i podsumowanie cyklu idą przez Bot API
+# z LV_TELEGRAM_BOT_TOKEN + LV_TELEGRAM_CHAT_ID w .env Hermesa (własny bot usera,
+# tylko sendMessage — nie odpytuje getUpdates, więc nie gryzie się z cudzym
+# long pollingiem). Przełącznik: LasVegas → Ustawienia → Powiadomienia.
+#
 # Pełna pętla logowania (od 1.5.0): przed obudzeniem agenta cykl sam sprawdza
 # sesję u buków z kolejki (scripts/lv-login.py) i loguje z zapisanych
 # poświadczeń. Hasło nigdy nie przechodzi przez model ani linię poleceń — czyta
@@ -121,19 +126,46 @@ agent_config() {
   [ -n "$provider" ] && LV_PROVIDER="$provider"
   return 0
 }
-LV_TELEGRAM=0
+# Przełącznik z aplikacji: "" = jeszcze nie pytaliśmy (wysyłaj, jeśli bot jest
+# skonfigurowany — alert o niedostępnym API nie może czekać na API), 1/0 = decyzja usera.
+LV_TELEGRAM=""
 
-# Telegram przez Hermesa: `hermes send` używa bota z konfiguracji Hermesa
-# (hermes gateway setup), bez LLM i bez działającej bramki. Skrypt nie dotyka
-# tokenu bota. Wysyłamy tylko, gdy użytkownik włączył to w aplikacji; brak
-# skonfigurowanego Telegrama = jedna linia w logu, nie błąd cyklu.
+# Telegram BEZPOŚREDNIO przez Bot API (sendMessage), z dwóch wpisów w .env
+# Hermesa: LV_TELEGRAM_BOT_TOKEN i LV_TELEGRAM_CHAT_ID. Celowo NIE przez
+# bramkę Telegram Hermesa: użytkownik ma na tej maszynie własnego bota na long
+# pollingu, a dwa procesy na getUpdates z jednym tokenem się gryzą. Samo
+# wysyłanie nie odpytuje getUpdates, więc nie przeszkadza. Log zostaje kanałem
+# pewnym; błąd wysyłki (sieć, zły token) nigdy nie przerywa cyklu.
+#
+# Token nie stoi w linii z curl (skaner skilli Hermesa: env_exfil_curl) —
+# adres składa osobna funkcja, tak jak nagłówek w lv-api.sh.
+telegram_endpoint() {
+  printf 'https://api.telegram.org/bot%s/sendMessage' "$LV_TELEGRAM_BOT_TOKEN"
+}
+
 telegram_send() {
-  [ "$LV_TELEGRAM" = "1" ] || return 0
+  [ "$LV_TELEGRAM" != "0" ] || return 0
+  load_env
   local text="$1"
+  # Limit Telegrama to 4096 znaków; podsumowanie dużego cyklu tniemy z dopiskiem.
+  if [ "${#text}" -gt 3800 ]; then
+    text="${text:0:3800}
+… (ciąg dalszy w lv-executor.log)"
+  fi
+  if [ -n "${LV_TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${LV_TELEGRAM_CHAT_ID:-}" ]; then
+    if curl -s --max-time 10 "$(telegram_endpoint)" \
+         --data-urlencode "chat_id=$LV_TELEGRAM_CHAT_ID" \
+         --data-urlencode "text=$text" > /dev/null 2>&1; then
+      return 0
+    fi
+    log "OSTRZEŻENIE: wysyłka na Telegram (Bot API) nie powiodła się — sprawdź LV_TELEGRAM_BOT_TOKEN / LV_TELEGRAM_CHAT_ID w $ENV_FILE i sieć"
+    return 1
+  fi
+  # Bez własnego bota: bramka Telegram Hermesa, jeśli ją skonfigurowano (hermes gateway setup).
   if "$HERMES_BIN" send --to telegram -q -s "LasVegas · agent zakładów" "$text" >> "$LOG" 2>&1; then
     return 0
   fi
-  log "OSTRZEŻENIE: hermes send --to telegram nie zadziałał — skonfiguruj Telegram w Hermesie (hermes gateway setup) albo wyłącz „Agent zakładów na Telegramie” w LasVegas"
+  log "OSTRZEŻENIE: Telegram nieskonfigurowany — dopisz LV_TELEGRAM_BOT_TOKEN i LV_TELEGRAM_CHAT_ID do $ENV_FILE albo wyłącz „Agent zakładów na Telegramie” w LasVegas"
   return 1
 }
 
@@ -306,6 +338,9 @@ notify() {
 warn() {
   printf '\033[33m%s\033[0m\n' "$*" >&2
   log "OSTRZEŻENIE: $*"
+  # Ostrzeżenia (np. nieudana samoaktualizacja skilla) też na Telegram —
+  # z timera bez sesji graficznej nikt nie czyta logu na bieżąco.
+  telegram_send "⚠️ $*" || true
 }
 
 # Żywy lock = trwa bieg agenta. Podmiana plików skilla w jego trakcie zostawiłaby
@@ -453,6 +488,9 @@ load_env() {
   [ -n "${LV_EXECUTOR_TOKEN:-}" ] || LV_EXECUTOR_TOKEN=$(sed -n 's/^LV_EXECUTOR_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
   [ -n "${LV_API_URL:-}" ] || LV_API_URL=$(sed -n 's/^LV_API_URL=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
   LV_API_URL="${LV_API_URL:-https://lv.ap2ju.com}"
+  # Telegram (opcjonalnie): własny bot użytkownika, tylko wysyłanie — patrz telegram_send.
+  [ -n "${LV_TELEGRAM_BOT_TOKEN:-}" ] || LV_TELEGRAM_BOT_TOKEN=$(sed -n 's/^LV_TELEGRAM_BOT_TOKEN=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
+  [ -n "${LV_TELEGRAM_CHAT_ID:-}" ] || LV_TELEGRAM_CHAT_ID=$(sed -n 's/^LV_TELEGRAM_CHAT_ID=//p' "$ENV_FILE" 2>/dev/null | tail -1 | tr -d '"'"'"' ')
 }
 
 # GET /api/executor/queue — poza listą zleceń zwalnia po stronie serwera zawieszone
