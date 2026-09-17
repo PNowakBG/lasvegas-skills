@@ -75,7 +75,7 @@ cmd="${1:-help}"
 # Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
 # WYKONANIA komendy, a nie w „auth_header" — powód w komentarzu przy nim.
 case "$cmd" in
-  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy)
+  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest)
     require_token
     ;;
 esac
@@ -185,6 +185,14 @@ case "$cmd" in
     # LasVegas (domyślnie tak: limit czasu gry). Cykl czyta to przed wylogowaniem.
     api_curl -H "$(auth_header)" "$BASE/session-policy"
     ;;
+  digest)
+    # digest <sinceISO> — co TO urządzenie potwierdziło od podanej chwili
+    # (postawione/pominięte/nieudane), z gotowymi polskimi liniami `line`.
+    # Cykl wysyła je na Telegram przez `hermes send`.
+    since="${2:-}"
+    [[ -n "$since" ]] || { echo "BŁĄD: digest wymaga daty ISO (np. 2026-09-17T18:00:00Z)." >&2; exit 2; }
+    api_curl -H "$(auth_header)" "$BASE/digest?since=$(printf '%s' "$since" | sed 's/+/%2B/g; s/:/%3A/g')"
+    ;;
   session)
     # session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]
     #
@@ -227,6 +235,7 @@ lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
   session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
+  digest <sinceISO>               podsumowanie potwierdzeń tego urządzenia od chwili (linie na Telegram)
   session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
   verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)

@@ -109,10 +109,49 @@ agent_config() {
   json=$(lv_api 10 agent-config 2>/dev/null) || return 1
   model=$(printf '%s' "$json" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   provider=$(printf '%s' "$json" | sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  # Przełącznik Telegrama z aplikacji (Ustawienia → Powiadomienia → „Agent
+  # zakładów na Telegramie"). Brak pola = nie wysyłaj.
+  if printf '%s' "$json" | grep -q '"telegram"[[:space:]]*:[[:space:]]*true'; then
+    LV_TELEGRAM=1
+  else
+    LV_TELEGRAM=0
+  fi
   [ -n "$model" ] || return 1
   LV_MODEL="$model"
   [ -n "$provider" ] && LV_PROVIDER="$provider"
   return 0
+}
+LV_TELEGRAM=0
+
+# Telegram przez Hermesa: `hermes send` używa bota z konfiguracji Hermesa
+# (hermes gateway setup), bez LLM i bez działającej bramki. Skrypt nie dotyka
+# tokenu bota. Wysyłamy tylko, gdy użytkownik włączył to w aplikacji; brak
+# skonfigurowanego Telegrama = jedna linia w logu, nie błąd cyklu.
+telegram_send() {
+  [ "$LV_TELEGRAM" = "1" ] || return 0
+  local text="$1"
+  if "$HERMES_BIN" send --to telegram -q -s "LasVegas · agent zakładów" "$text" >> "$LOG" 2>&1; then
+    return 0
+  fi
+  log "OSTRZEŻENIE: hermes send --to telegram nie zadziałał — skonfiguruj Telegram w Hermesie (hermes gateway setup) albo wyłącz „Agent zakładów na Telegramie” w LasVegas"
+  return 1
+}
+
+# Podsumowanie cyklu z serwera (co to urządzenie potwierdziło od startu cyklu) —
+# gotowe polskie linie, bez parsowania wyjścia modelu.
+send_cycle_digest() {
+  local since="$1" json py lines
+  [ "$LV_TELEGRAM" = "1" ] || return 0
+  json=$(lv_api 15 digest "$since" 2>/dev/null) || { log "OSTRZEŻENIE: digest cyklu niedostępny"; return 0; }
+  py=$(python_bin) || return 0
+  lines=$(printf '%s' "$json" | "$py" -c 'import json,sys
+try:
+    items = json.load(sys.stdin)
+except Exception:
+    items = []
+print("\n".join(str(i.get("line", "")) for i in items if isinstance(i, dict) and i.get("line")))' 2>/dev/null)
+  [ -n "$lines" ] || return 0
+  telegram_send "$lines"
 }
 
 # Blackhole trackerów przez PAC zamiast --host-resolver-rules: tamta flaga jest na
@@ -253,6 +292,8 @@ notify() {
   # z timera bez sesji graficznej notify-send nie ma gdzie dostarczyć komunikatu,
   # a sprawa wymagająca człowieka musi zostać zapisana tak czy inaczej.
   log "POWIADOMIENIE: $1 — $2"
+  # Sprawa dla człowieka idzie też na Telegram (gdy włączone w aplikacji).
+  telegram_send "⚠️ $2" || true
   if [ "$LV_OS" = "Darwin" ]; then
     osascript -e "display notification \"$2\" with title \"$1\" sound name \"Basso\"" > /dev/null 2>&1 || true
   elif command -v notify-send > /dev/null 2>&1; then
@@ -669,6 +710,7 @@ MODEL_ARGS=()
 # Hermesa, a lv-api.sh świadomie nie czyta konfiguracji z dysku (skaner skilli
 # traktuje sięganie skilla do magazynu poświadczeń jak exfiltrację). Bez tego
 # agent zależałby od tego, czy Hermes sam eksportuje swój .env do narzędzi.
+CYCLE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
   "$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury" \
@@ -677,6 +719,9 @@ rc=${PIPESTATUS[0]}
 
 # Sesje u buków zamykamy zaraz po pracy — niezależnie od tego, jak skończył agent.
 logout_bookmakers "$QUEUE"
+
+# Podsumowanie cyklu na Telegram: postawione, pominięte, nieudane — z serwera.
+send_cycle_digest "$CYCLE_START"
 
 # Powiadomienia o porażkach wymagających człowieka — deterministycznie z wyjścia biegu.
 if grep -q "not_logged_in" "$LAST_RUN"; then
