@@ -169,6 +169,22 @@ telegram_endpoint() {
   printf 'https://api.telegram.org/bot%s/sendMessage' "$LV_TELEGRAM_BOT_TOKEN"
 }
 
+# Czytelny powód z odpowiedzi Bot API: „401 Unauthorized” (zły token), „400 Bad
+# Request: chat not found” (zły chat id) — albo komunikat curl-a, gdy nie było
+# odpowiedzi (brak sieci). Pusta odpowiedź = brak połączenia.
+telegram_error() {
+  local response="$1" code desc
+  code=$(printf '%s' "$response" | sed -n 's/.*"error_code"[[:space:]]*:[[:space:]]*\([0-9]*\).*/\1/p')
+  desc=$(printf '%s' "$response" | sed -n 's/.*"description"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+  if [ -n "$code" ] || [ -n "$desc" ]; then
+    printf '%s %s' "${code:-?}" "${desc:-bez opisu}"
+  elif [ -n "$response" ]; then
+    printf '%s' "${response:0:200}"
+  else
+    printf 'brak odpowiedzi (sieć?)'
+  fi
+}
+
 telegram_send() {
   [ "$LV_TELEGRAM" != "0" ] || return 0
   load_env
@@ -179,12 +195,18 @@ telegram_send() {
 … (ciąg dalszy w lv-executor.log)"
   fi
   if [ -n "${LV_TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${LV_TELEGRAM_CHAT_ID:-}" ]; then
-    if curl -s --max-time 10 "$(telegram_endpoint)" \
+    # Sukces to WYŁĄCZNIE odpowiedź {"ok":true,…}. Do 1.5.3 liczył się sam kod
+    # wyjścia curl-a, a ten jest zerowy także przy 401 (zły token) i 400 (zły
+    # chat id) — agent logował „wysłano”, choć nic nie doszło. Odpowiedź
+    # Telegrama nie zawiera tokenu, więc jej opis może iść do logu.
+    local response
+    response=$(curl -sS --max-time 10 "$(telegram_endpoint)" \
          --data-urlencode "chat_id=$LV_TELEGRAM_CHAT_ID" \
-         --data-urlencode "text=$text" > /dev/null 2>&1; then
+         --data-urlencode "text=$text" 2>&1) || true
+    if printf '%s' "$response" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
       return 0
     fi
-    log "OSTRZEŻENIE: wysyłka na Telegram (Bot API) nie powiodła się — sprawdź LV_TELEGRAM_BOT_TOKEN / LV_TELEGRAM_CHAT_ID w $ENV_FILE i sieć"
+    log "OSTRZEŻENIE: Telegram (Bot API) odrzucił wysyłkę: $(telegram_error "$response") — sprawdź LV_TELEGRAM_BOT_TOKEN / LV_TELEGRAM_CHAT_ID w $ENV_FILE i sieć"
     return 1
   fi
   # Bez własnego bota: bramka Telegram Hermesa, jeśli ją skonfigurowano (hermes gateway setup).
