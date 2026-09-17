@@ -67,6 +67,14 @@ każdego cyklu przez Bot API — samo `sendMessage`, bez `getUpdates`, więc nie
 przeszkadza Twojemu botowi na long pollingu ani nie wymaga bramki Hermesa.
 Przełącznik on/off: LasVegas → Ustawienia → Powiadomienia.
 
+## Meldunek do LasVegas
+
+Przy każdym cyklu agent dokleja do pytania o model krótki meldunek o tym
+komputerze: wersję skilla, system, dla których bukmacherów ma zapisane login
+i hasło (same nazwy — wartości nigdy nie opuszczają maszyny) i czy ma token
+Telegrama. Z tego LasVegas odhacza listę „Do zrobienia na Twoim komputerze”
+na stronie Bukmacherzy / Podłącz agenta.
+
 ## Wyłączanie awaryjne (kill switch)
 
 W LasVegas: reguły auto-place per bukmacher → wyłącz. Kolejka natychmiast przestaje

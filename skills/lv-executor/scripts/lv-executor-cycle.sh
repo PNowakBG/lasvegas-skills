@@ -107,11 +107,37 @@ lv_api() {
     bash "$SKILL_DIR/scripts/lv-api.sh" "$@"
 }
 
+# Meldunek o TYM komputerze, doklejany do pytania o model. LasVegas nie widzi
+# maszyny użytkownika, a strona „Do zrobienia na Twoim komputerze" ma odhaczać
+# kroki, których serwer nie zrobi sam: wersja skilla, system, DLA KTÓRYCH buków
+# są zapisane poświadczenia (same nazwy buków — plik czyta tylko lv-login.py,
+# login i hasło nigdy nie opuszczają maszyny) i czy Telegram jest ustawiony.
+device_report() {
+  local ver os creds="" slug key tg=0
+  ver=$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null) || ver=""
+  case "$LV_OS" in
+    Darwin) os=darwin ;;
+    Linux) os=linux ;;
+    MINGW*|MSYS*|CYGWIN*) os=windows ;;
+    *) os="" ;;
+  esac
+  for slug in sts superbet; do
+    key="LV_$(printf '%s' "$slug" | tr '[:lower:]' '[:upper:]')"
+    if grep -q "^${key}_LOGIN=." "$CREDENTIALS_FILE" 2>/dev/null \
+      && grep -q "^${key}_PASSWORD=." "$CREDENTIALS_FILE" 2>/dev/null; then
+      creds="${creds:+$creds,}$slug"
+    fi
+  done
+  load_env
+  if [ -n "${LV_TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${LV_TELEGRAM_CHAT_ID:-}" ]; then tg=1; fi
+  printf 'skill=%s&os=%s&creds=%s&telegram=%s' "$ver" "$os" "$creds" "$tg"
+}
+
 # Model egzekutora z LasVegas. Niepowodzenie = nie wiemy, jaki model → caller
 # pomija „-m" i oddaje wybór Hermesowi (lepsze niż wpisanie czegokolwiek na ślepo).
 agent_config() {
   local json model provider
-  json=$(lv_api 10 agent-config 2>/dev/null) || return 1
+  json=$(lv_api 10 agent-config "$(device_report)" 2>/dev/null) || return 1
   model=$(printf '%s' "$json" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   provider=$(printf '%s' "$json" | sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   # Przełącznik Telegrama z aplikacji (Ustawienia → Powiadomienia → „Agent
@@ -385,9 +411,14 @@ skill_selfupdate() {
   fi
   log "zaktualizowano skill do $remote — restart cyklu na nowym kodzie"
   [ -n "$force" ] && echo "zaktualizowano do $remote"
+  # Instalator Hermesa kopiuje pliki bez bitu wykonywalności (1.5.2 na Linuksie:
+  # „exec $0” → „Permission denied”, exit 126, a zlecenia z tego cyklu czekały
+  # do następnego). Restart przez „bash”, bo to nie zależy od trybu pliku;
+  # chmod dla wywołań z ręki i z launchd/systemd, które podają ścieżkę wprost.
+  chmod +x "$SKILL_DIR"/scripts/*.sh 2>/dev/null || true
   # „${SCRIPT_ARGS[@]+…}" — macOS ma bash 3.2, a tam pusta tablica pod „set -u"
   # kończy skrypt błędem (ten sam idiom co przy MODEL_ARGS niżej).
-  exec "$0" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
+  exec bash "$0" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"}
 }
 
 # Wywoływane na starcie każdego cyklu. Znacznik czasu w $UPDATE_CHECK dławi
