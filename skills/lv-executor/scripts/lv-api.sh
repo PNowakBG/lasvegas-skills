@@ -181,15 +181,19 @@ case "$cmd" in
     api_curl -H "$(auth_header)" "$BASE/agent-config"
     ;;
   session)
-    # session <bookmaker> <logged_in|logged_out> [balance]
+    # session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]
     #
     # Meldunek stanu logowania u bukmachera (Krok 0 procedury): LasVegas wie,
     # że urządzenie ma świeżą sesję u tego buka, ZANIM pójdzie zlecenie.
-    # Bramka kolejki czyta ten raport: „logged_in" starzeje się po 30 min,
-    # „logged_out" flaguje zlecenia buka („loginBlocked: true", claim = 404)
-    # do następnego raportu. Sondowani
-    # bukmacherzy: superbet, sts — pozostali przechodzą bez raportu.
-    # Saldo opcjonalne, liczba z kropką: „130,50 zł" → 130.50.
+    # Bramka kolejki czyta ten raport PER KONSUMENT: „logged_in" starzeje się
+    # po 30 min, „logged_out" flaguje zlecenia buka („loginBlocked: true",
+    # claim = 404) do następnego raportu agenta. Sondowani bukmacherzy:
+    # superbet, sts — pozostali przechodzą bez raportu.
+    # Saldo opcjonalne, liczba z kropką: „130,50 zł" → 130.50; pusty łańcuch
+    # ("") = brak salda. Przy logged_out podaj POWÓD z lv-login.py (captcha,
+    # two_factor, bad_credentials, no_credentials, login_form_not_found,
+    # login_error, not_logged_in) i detail — LasVegas z tego robi powiadomienie
+    # i baner „zaloguj agenta"; bez powodu użytkownik widzi tylko „wylogowany".
     bookmaker="${2:-}"
     loginState="${3:-}"
     [[ -n "$bookmaker" ]] || { echo "BŁĄD: session wymaga sluga bukmachera (np. sts, superbet)." >&2; exit 2; }
@@ -200,6 +204,14 @@ case "$cmd" in
     esac
     body=$(printf '{"bookmaker":"%s","loggedIn":%s' "$bookmaker" "$loggedIn")
     [[ -n "${4:-}" ]] && body="$body,\"balance\":$4"
+    if [[ -n "${5:-}" ]]; then
+      reason_escaped=$(printf '%s' "$5" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      body="$body,\"reason\":\"$reason_escaped\""
+    fi
+    if [[ -n "${6:-}" ]]; then
+      detail_escaped=$(printf '%s' "$6" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      body="$body,\"detail\":\"$detail_escaped\""
+    fi
     body="$body}"
     api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/session"
@@ -209,7 +221,7 @@ case "$cmd" in
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
-  session <bookmaker> <logged_in|logged_out> [balance]   stan logowania u buka (Krok 0; bramka: superbet, sts)
+  session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
   verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)
   claim <betId>                   podbij zlecenie (QUEUED → PLACING)

@@ -49,11 +49,15 @@ hermes skills tap add PNowakBG/lasvegas-skills
 hermes skills install PNowakBG/lasvegas-skills/lv-executor
 ```
 
-## Jedyny krok, którego nie da się zautomatyzować
+## Logowanie do bukmacherów
 
-Gdy agent pierwszy raz trafi na ekran logowania bukmachera, otworzy widoczne okno
-przeglądarki i poprosi: *„Zaloguj się do X w otwartym oknie — poczekam"*. Logujesz się
-raz (hasłem/2FA), agent czeka i dalej działa sam. Cookies z Twojego profilu załatwiają resztę.
+Agent loguje się sam: `lv-executor-cycle.sh credentials sts` (i `superbet`) zapisuje
+login i hasło w `~/.hermes/lv-bookmakers.env` (tylko Ty masz do niego dostęp), a
+`scripts/lv-login.py` używa ich przed każdym cyklem — hasło nigdy nie trafia do
+modelu ani do LasVegas. Gdy bukmacher zażąda captchy albo kodu SMS, agent oddaje
+sprawę Tobie: melduje powód do LasVegas (powiadomienie + baner), a
+`lv-executor-cycle.sh login sts` otwiera okno agenta, w którym logujesz się raz.
+Sesja zostaje w profilu agenta.
 
 ## Wyłączanie awaryjne (kill switch)
 

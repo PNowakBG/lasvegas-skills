@@ -18,8 +18,16 @@
 # Użycie: lv-executor-cycle.sh                 # pełny cykl (launchd/systemd co 300 s)
 #         lv-executor-cycle.sh selfupdate      # wymuś aktualizację skilla z tapa (bez limitu godziny)
 #         lv-executor-cycle.sh ensure-chrome   # tylko podnieś przeglądarkę agenta
-#         lv-executor-cycle.sh login [superbet|sts|https://adres]  # otwórz buka i poczekaj na zalogowanie
+#         lv-executor-cycle.sh credentials sts # zapisz login+hasło do buka (lokalnie, chmod 600)
+#         lv-executor-cycle.sh login [superbet|sts|https://adres]  # zaloguj skryptem; gdy się nie da — okno dla Ciebie
 #         lv-executor-cycle.sh session sts logged_in [saldo]      # zgłoś stan logowania ręcznie
+#
+# Pełna pętla logowania (od 1.5.0): przed obudzeniem agenta cykl sam sprawdza
+# sesję u buków z kolejki (scripts/lv-login.py) i loguje z zapisanych
+# poświadczeń. Hasło nigdy nie przechodzi przez model ani linię poleceń — czyta
+# je wyłącznie lv-login.py z pliku poświadczeń. Gdy logowanie wymaga człowieka
+# (captcha, kod SMS, złe hasło), cykl melduje POWÓD do LasVegas (powiadomienie
+# in-app/push + baner) i wysyła powiadomienie systemowe.
 set -u
 
 # Argumenty wywołania skryptu. W „skill_selfupdate" „$@" to już argumenty FUNKCJI
@@ -61,6 +69,11 @@ LV_PROVIDER="${LV_PROVIDER:-openrouter}"
 
 # Katalog tego skilla — używany do wołania lv-api.sh, jedynego klienta API.
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Poświadczenia bukmacherów — OSOBNY plik (nie konfiguracja Hermesa), którego
+# nie czyta żadne narzędzie modelu; sięga do niego tylko lv-login.py.
+CREDENTIALS_FILE="$HERMES_HOME/lv-bookmakers.env"
+LOGIN_PY="$SKILL_DIR/scripts/lv-login.py"
 
 # Samoaktualizacja z tapa. Instalator kładzie skill w ~/.hermes/skills/lv-executor
 # (stąd SKILL_DIR), a tap publikuje wersję w pliku VERSION obok tego skryptu.
@@ -122,6 +135,71 @@ dir_mtime() {
   fi
 }
 cdp_alive() { curl -sf --max-time 3 "$CDP/json/version" > /dev/null 2>&1; }
+
+# Python do lv-login.py: systemowy python3 wystarcza (sam stdlib), zapas = venv Hermesa.
+python_bin() {
+  if command -v python3 > /dev/null 2>&1; then
+    echo python3
+  elif [ -x "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
+    echo "$HERMES_HOME/hermes-agent/venv/bin/python"
+  else
+    return 1
+  fi
+}
+
+# Wartość pola z jednolinijkowego JSON-a lv-login.py (bez jq — jq nie jest pewne).
+json_field() {
+  # $1 = JSON, $2 = klucz; wartości null/liczby/łańcuchy; brak = pusty łańcuch
+  printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1 | grep . \
+    || printf '%s' "$1" | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9.]*\).*/\1/p" | head -1
+}
+
+# Logowanie do buka skryptem + meldunek do LasVegas + powiadomienie, gdy
+# potrzebny człowiek. $1 = slug (sts|superbet), $2 = "--check-only" (opcjonalnie).
+# Zwraca 0 = zalogowany, 1 = nie. Wynik JSON zostaje w LOGIN_RESULT.
+login_bookmaker() {
+  local slug="$1" mode="${2:-}" py state reason detail balance
+  py=$(python_bin) || { log "BŁĄD: brak python3 — lv-login.py nie ma czym ruszyć"; return 1; }
+  LOGIN_RESULT=$(LV_LOGIN_FILE="$CREDENTIALS_FILE" BU_CDP_URL="$CDP" \
+    "$py" "$LOGIN_PY" "$slug" $mode 2>> "$LOG") || true
+  state=$(json_field "$LOGIN_RESULT" state)
+  reason=$(json_field "$LOGIN_RESULT" reason)
+  detail=$(json_field "$LOGIN_RESULT" detail)
+  balance=$(json_field "$LOGIN_RESULT" balance)
+  log "logowanie $slug: ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}"
+  if [ "$state" = "logged_in" ]; then
+    lv_api 15 session "$slug" logged_in ${balance:+"$balance"} > /dev/null 2>&1 \
+      || log "OSTRZEŻENIE: nie zgłoszono logged_in $slug do LasVegas"
+    return 0
+  fi
+  # Brak wyniku (skrypt padł) też jest powodem — nie zostawiamy LasVegas bez wiedzy.
+  [ -n "$reason" ] || reason="login_error"
+  [ -n "$detail" ] || detail="lv-login.py nie zwrócił wyniku"
+  lv_api 15 session "$slug" logged_out "" "$reason" "$detail" > /dev/null 2>&1 \
+    || log "OSTRZEŻENIE: nie zgłoszono logged_out $slug do LasVegas"
+  case "$reason" in
+    captcha) notify "LasVegas agent" "$slug: bukmacher pokazał captchę — zaloguj się w oknie agenta (lv-executor-cycle.sh login $slug)." ;;
+    two_factor) notify "LasVegas agent" "$slug: potrzebny kod SMS/2FA — zaloguj się w oknie agenta (lv-executor-cycle.sh login $slug)." ;;
+    bad_credentials|no_credentials) notify "LasVegas agent" "$slug: brak lub złe poświadczenia — uruchom: lv-executor-cycle.sh credentials $slug" ;;
+    not_logged_in) ;;  # tylko --check-only bez próby logowania — nic do zgłaszania
+    *) notify "LasVegas agent" "$slug: logowanie nie powiodło się ($reason) — zaloguj się w oknie agenta." ;;
+  esac
+  return 1
+}
+
+# Buki sondowane (sts, superbet) z zleceniami w kolejce — dla nich cykl loguje
+# ZANIM obudzi model, żeby agent nie tracił sesji LLM na ekran logowania.
+queue_bookmakers() {
+  printf '%s' "$1" | grep -o '"bookmaker"[[:space:]]*:[[:space:]]*"[a-z0-9-]*"' \
+    | sed 's/.*"\([a-z0-9-]*\)"$/\1/' | sort -u | grep -E '^(sts|superbet)$' || true
+}
+
+ensure_logins() {
+  local slug
+  for slug in $(queue_bookmakers "$1"); do
+    login_bookmaker "$slug" || true
+  done
+}
 notify() {
   # $1 = tytuł, $2 = treść. Log jest kanałem pewnym, powiadomienie tylko wygodnym:
   # z timera bez sesji graficznej notify-send nie ma gdzie dostarczyć komunikatu,
@@ -336,6 +414,18 @@ case "${1:-cycle}" in
         ;;
     esac
     ensure_chrome || exit 1
+    # Najpierw skrypt: gdy poświadczenia są zapisane, logowanie nie potrzebuje
+    # człowieka. Okno dla użytkownika otwieramy dopiero, gdy skrypt oddał sprawę
+    # (captcha, kod SMS, brak poświadczeń).
+    if [[ -n "$LOGIN_SLUG" ]]; then
+      load_env
+      if [ -n "${LV_EXECUTOR_TOKEN:-}" ] && login_bookmaker "$LOGIN_SLUG"; then
+        echo "Zalogowano do $LOGIN_SLUG skryptem i zgłoszono do LasVegas: $LOGIN_RESULT"
+        exit 0
+      fi
+      echo "Logowanie skryptem nie wystarczyło: ${LOGIN_RESULT:-brak wyniku}"
+      echo "Otwieram okno przeglądarki agenta — dokończ logowanie sam."
+    fi
     # Ta sama aplikacja + ten sam user-data-dir → Chrome przekazuje URL działającej
     # instancji agenta (process singleton) i kończy nowy proces.
     chrome_spawn --user-data-dir="$PROFILE_DIR" "$LOGIN_URL" || exit 1
@@ -370,6 +460,45 @@ case "${1:-cycle}" in
     fi
     exit 0
     ;;
+  credentials)
+    # credentials <sts|superbet> — zapis loginu i hasła do pliku poświadczeń
+    # (chmod 600). Hasło czytane bez echa z terminala, nigdy z argumentów.
+    # Po zapisie próbne logowanie skryptem — użytkownik od razu wie, czy działa.
+    case "${2:-}" in
+      sts) CRED_SLUG=sts; CRED_KEY=LV_STS ;;
+      superbet) CRED_SLUG=superbet; CRED_KEY=LV_SUPERBET ;;
+      *) echo "użycie: $0 credentials <sts|superbet>" >&2; exit 2 ;;
+    esac
+    [[ -t 0 ]] || { echo "credentials wymaga terminala (hasło czytane bez echa)." >&2; exit 2; }
+    read -r -p "Login/e-mail do $CRED_SLUG: " CRED_LOGIN < /dev/tty
+    read -r -s -p "Hasło do $CRED_SLUG (bez echa): " CRED_PASS < /dev/tty; echo
+    [[ -n "$CRED_LOGIN" && -n "$CRED_PASS" ]] || { echo "Login i hasło nie mogą być puste." >&2; exit 2; }
+    umask 077
+    touch "$CREDENTIALS_FILE"
+    chmod 600 "$CREDENTIALS_FILE"
+    # Podmiana per klucz (jak instalator z tokenem) — reszta pliku nietknięta.
+    CRED_TMP=$(mktemp "$HERMES_HOME/lv-bookmakers.XXXXXX")
+    grep -v -E "^${CRED_KEY}_(LOGIN|PASSWORD)=" "$CREDENTIALS_FILE" > "$CRED_TMP" 2>/dev/null || true
+    printf '%s_LOGIN=%s\n%s_PASSWORD=%s\n' "$CRED_KEY" "$CRED_LOGIN" "$CRED_KEY" "$CRED_PASS" >> "$CRED_TMP"
+    mv "$CRED_TMP" "$CREDENTIALS_FILE"
+    chmod 600 "$CREDENTIALS_FILE"
+    unset CRED_PASS
+    echo "Zapisano poświadczenia $CRED_SLUG w $CREDENTIALS_FILE (tylko Ty masz do niego dostęp)."
+    load_env
+    if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
+      echo "Brak tokenu urządzenia — pomijam próbne logowanie. Zainstaluj agenta komendą z LasVegas."
+      exit 0
+    fi
+    echo "Próbne logowanie skryptem…"
+    ensure_chrome || exit 1
+    if login_bookmaker "$CRED_SLUG"; then
+      echo "Działa: $LOGIN_RESULT"
+      exit 0
+    fi
+    echo "Nie udało się: ${LOGIN_RESULT:-brak wyniku}"
+    echo "Gdy powód to captcha/kod SMS: $0 login $CRED_SLUG (okno dla Ciebie)."
+    exit 1
+    ;;
   session)
     # Meldunek stanu logowania z terminala. Istnieje, bo lv-api.sh bierze token
     # wyłącznie ze środowiska, a użytkownik nie ma powodu eksportować zmiennych
@@ -386,7 +515,7 @@ case "${1:-cycle}" in
     ;;
   cycle) ;;
   *)
-    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|login [superbet|sts|https://adres]|session <slug> <logged_in|logged_out> [saldo]]" >&2
+    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|credentials <sts|superbet>|login [superbet|sts|https://adres]|session <slug> <logged_in|logged_out> [saldo] [reason] [detail]]" >&2
     exit 2
     ;;
 esac
@@ -456,8 +585,13 @@ if ! pgrep -f "hermes chat" >/dev/null 2>&1; then
 fi
 log "kolejka: $ORDERS zleceń — budzę agenta (${LV_MODEL:-model domyślny Hermesa} @ ${LV_PROVIDER:-?})"
 
-# --- przeglądarka + cykl agenta -------------------------------------------------
+# --- przeglądarka + logowanie + cykl agenta ------------------------------------
 ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl pominięty"; exit 1; }
+
+# Logowanie PRZED sesją LLM: skrypt z poświadczeniami, model nic nie widzi.
+# Porażka nie zatrzymuje cyklu — agent dostanie zlecenia z loginBlocked i
+# zajmie się resztą kolejki, a LasVegas i użytkownik znają już powód.
+ensure_logins "$QUEUE"
 
 # UWAGA: nie używać „exec" — zastąpiłby shell i trap EXIT nigdy by nie zwolnił locka.
 # „${ARR[@]+…}" zamiast zwykłego rozwinięcia w cudzysłowach: macOS ma bash 3.2,

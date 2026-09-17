@@ -41,11 +41,13 @@ z `loginBlocked: true` (claim = 404) — patrz Krok 0 SKILL.md.
   to placeholdery) — jeśli nie znajdziesz kwoty, raportuj `logged_in` BEZ salda,
   nie zgaduj liczby. Znalezioną kwotę (`NNN,NN zł` → `130.50`) podaj jako
   `balanceBefore`/`balanceAfter`.
-- Sesję zdobywa TYLKO użytkownik: otwórz `https://superbet.pl/` i kliknij
-  `Zaloguj` w nagłówku (`.e2e-login`) — formularz to modal; **nie istnieje**
-  strona `/logowanie` (404, sprawdzone 2026-09-13). Poproś go
-  w czacie i czekaj (sprawdzaj co ~30 s, max 5 min); po jego logowaniu ponów
-  odczyt `localStorage` z metody pierwotnej.
+- Sesję zdobywa `python3 scripts/lv-login.py superbet`: klika `Zaloguj` w
+  nagłówku (`.e2e-login`) — formularz to modal z polami
+  `input[name="usernameOrEmail"]` i `input[name="password"]` oraz przyciskiem
+  `#login-modal-submit` (**nie istnieje** strona `/logowanie` — 404, sprawdzone
+  2026-09-13) — i czeka na `localStorage.user.value`. Przy captchy/kodzie SMS
+  skrypt oddaje powód, a loguje się użytkownik w oknie agenta (nie Ty). Po
+  `logged_in` ponów odczyt `localStorage` z metody pierwotnej.
 - Wykryta ważna sesja → `bash scripts/lv-api.sh session superbet logged_in <saldo>`
   — świeży raport odblokowuje zlecenia buka i odświeża saldo konta w LasVegas.
 - Nadal niezalogowany → `bash scripts/lv-api.sh session superbet logged_out`
