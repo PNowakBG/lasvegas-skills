@@ -178,7 +178,10 @@ case "$cmd" in
     # Model, na którym ma pracować agent egzekutora (provider + model).
     # Serwer jest jedynym źródłem prawdy: zmiana modelu — także wycofanie go
     # przez dostawcę — nie wymaga dotykania skryptów na maszynie.
-    api_curl -H "$(auth_header)" "$BASE/agent-config"
+    # Opcjonalny $2 to meldunek o tym komputerze (skill=…&os=…&creds=…&telegram=…),
+    # składany przez device_report w cyklu — patrz tam, co i po co idzie.
+    report="${2:-}"
+    api_curl -H "$(auth_header)" "$BASE/agent-config${report:+?$report}"
     ;;
   session-policy)
     # Czy po pracy wylogować się z buka — ustawienie z panelu bukmachera w
@@ -233,7 +236,7 @@ case "$cmd" in
     cat <<'EOF'
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
-  agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
+  agent-config [meldunek]         model agenta z LasVegas (provider + model) — pyta o to cykl; meldunek = skill=…&os=…&creds=…&telegram=…
   session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
   digest <sinceISO>               podsumowanie potwierdzeń tego urządzenia od chwili (linie na Telegram)
   session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)
