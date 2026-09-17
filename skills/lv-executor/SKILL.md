@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.5
+version: 1.5.6
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -94,8 +94,12 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
 2. **Kill switch PRZED każdym zleceniem.** `bash scripts/lv-api.sh kill-switch` —
    gdy `halted: true` albo reguła danego bukmachera ma `enabled: false`: koniec
    biegu, nic nie stawiaj.
-3. **Claim.** `bash scripts/lv-api.sh claim <betId>` — błąd 404 = ktoś inny już
-   wziął zlecenie; idź do następnego.
+3. **Claim.** `bash scripts/lv-api.sh claim <betId>` — każdy błąd = pomiń to
+   zlecenie i idź do następnego, BEZ śledztwa (17.09: agent spędził cały bieg
+   na dociekaniu „kto mi wziął zlecenie”). Treść odpowiedzi mówi dlaczego:
+   409 „czeka na Twoje zalogowanie u X” → zaloguj się (Krok 0) i wróć do claimu;
+   404 ze stanem („przerwane: mecz się zaczął”, „stawia je inny wykonawca”,
+   „konto wyłączone”) → zlecenie nie jest Twoje, zostaw je.
 4. **Playbook.** Załaduj `playbooks/<slug-bukmachera>.md` przez skill_view.
    Gdy nie istnieje → tryb EKSPLORUJ z `references/learning-procedure.md`
    (pierwszy kontakt z bukmacherem), potem DOKUMENTUJ playbook i kontynuuj.
@@ -126,7 +130,9 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    rozbieżność → NIE klikaj „Postaw" → `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.15 → 1.60"`
    (lub adekwatny powód z detail) → następne zlecenie.
 8. **Postawienie.** Kliknij „Postaw"/„Zakład" zgodnie z playbookiem. Po
-   potwierdzeniu odczytaj identyfikator kuponu (betId/ticket) wg playbooka.
+   potwierdzeniu odczytaj numer kuponu wg playbooka. Gdy bukmacher go nie
+   pokazuje, raportuj bez numeru (`-` w miejscu ticketId) — NIGDY nie wpisuj
+   betId jako numeru kuponu.
 9. **Raport.** `bash scripts/lv-api.sh placed <betId> <ticketId> <actualOdds> <actualStake> <balanceBefore> <balanceAfter>`
    — salda odczytane wg playbooka przed i po postawieniu, liczby z kropką
    (`130,50 zł` → `130.50`). Bez sald serwer nie uzgodni budżetu i nie odświeży
@@ -152,6 +158,14 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    (np. „Dzienny limit czasu gry osiągnięty") to jedyna diagnoza, jaką zobaczy właściciel.
    Zlecenie trafi wtedy na listę weryfikacji (`verifications`) — rozstrzygnij je
    przy najbliższym biegu zanim cokolwiek postawisz (punkt 0 — weryfikacje zaległe).
+   **`placed` zwróciło 404 („Nie znaleziono zlecenia do potwierdzenia”) po
+   realnym kliknięciu:** serwer zamknął zlecenie w trakcie biegu (rozszerzenie,
+   kill switch, gwizdek), ale kupon jest na koncie. NIE stawiaj drugi raz i nie
+   pisz własnego klienta HTTP — treść błędu widać w wyjściu `lv-api.sh`. Sprawdź
+   saldo i „Moje kupony”, potem:
+   `bash scripts/lv-api.sh attach <betId> <ticketId> <kurs> <stawka> [saldoPrzed] [saldoPo]`
+   — zlecenie dostaje kupon i trafia do ksiąg. 404 na `claim` („Zlecenie nie
+   czeka już w kolejce”) = zlecenie zamknięte przed Twoją próbą: pomiń je.
 
 10. **Wylogowanie po pracy.** Bukmacherzy liczą CZAS zalogowania do dziennego
     limitu gry (STS: „Osiągnięto dzienny limit czasu gry" po kilku sesjach
@@ -188,6 +202,10 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - Windows: resync real-profile wymaga CAŁKOWITEJ zamkniętej przeglądarki
   (też instancja tray/background). Jeśli sesja wychodzi niezalogowana — najpierw
   to sprawdź.
+- Playbook uzupełniaj PO obsłużeniu wszystkich zleceń z kolejki (przed
+  wylogowaniem, krok 10), nigdy między zleceniami: 17.09 zapis playbooka
+  Superbet zabrał 29 s w środku biegu, a każde zlecenie czeka na to samo okno
+  przed meczem. Wyjątek: samonaprawa, bez której następne zlecenie nie przejdzie.
 - Popupy cookies/RODO i inne okna: skrypt logowania (Krok 0) zamyka znane
   z rejestru LasVegas (`overlays` w agent-config); nowe zamknij sam i zgłoś
   `bash scripts/lv-api.sh overlay …` (krok 9) — rejestr jest wspólny dla
