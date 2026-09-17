@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.6
+version: 1.5.7
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -94,6 +94,15 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
 2. **Kill switch PRZED każdym zleceniem.** `bash scripts/lv-api.sh kill-switch` —
    gdy `halted: true` albo reguła danego bukmachera ma `enabled: false`: koniec
    biegu, nic nie stawiaj.
+   **Skrypt był pierwszy.** Zanim dostaniesz kolejkę, cykl próbował postawić
+   każde zlecenie STS/Superbet skryptem `scripts/lv-place.py` (bez modelu:
+   wyszukiwarka → strona meczu → blok rynku → kurs → stawka → weryfikacja →
+   „Postaw”). Zlecenia, które zostały, skrypt oddał z powodem `needs_model`
+   (treść w poleceniu cyklu: „Skrypt lv-place.py NIE poradził sobie…”) — zacznij
+   od tego kroku wg playbooka. Gdy naprawisz ścieżkę (nowa etykieta rynku, inny
+   selektor), DOKUMENTUJ ją w playbooku po biegu: developer przenosi ją do skryptu.
+   Sam też możesz użyć skryptu na sucho: `python3 scripts/lv-place.py prepare < zlecenie.json`
+   (JSON zlecenia z `orders`) — kończy na zweryfikowanym kuponie bez klikania.
 3. **Claim.** `bash scripts/lv-api.sh claim <betId>` — każdy błąd = pomiń to
    zlecenie i idź do następnego, BEZ śledztwa (17.09: agent spędził cały bieg
    na dociekaniu „kto mi wziął zlecenie”). Treść odpowiedzi mówi dlaczego:

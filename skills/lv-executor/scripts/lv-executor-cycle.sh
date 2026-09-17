@@ -82,6 +82,7 @@ CREDENTIALS_FILE="$HERMES_HOME/lv-bookmakers.env"
 # Ostatnia odpowiedź agent-config (model, przełączniki, znane okna) — patrz agent_config.
 AGENT_CONFIG_FILE="$HERMES_HOME/lv-agent-config.json"
 LOGIN_PY="$SKILL_DIR/scripts/lv-login.py"
+PLACE_PY="$SKILL_DIR/scripts/lv-place.py"
 
 # Samoaktualizacja z tapa. Instalator kładzie skill w ~/.hermes/skills/lv-executor
 # (stąd SKILL_DIR), a tap publikuje wersję w pliku VERSION obok tego skryptu.
@@ -753,6 +754,81 @@ fi
 echo $$ > "$LOCK/pid"
 trap 'rm -rf "$LOCK"' EXIT
 
+# --- szybka ścieżka: skrypt stawia bez modelu -------------------------------
+# lv-place.py (STS, Superbet): nawigacja → rynek → stawka → weryfikacja („prepare”,
+# bez claimu), potem claim i „commit” (jedno kliknięcie, kupon, saldo). Model
+# Hermesa dostaje tylko to, czego skrypt nie umiał (needs_model) — samonaprawa.
+# 17.09: model potrzebował 6–7 min na kupon; skrypt robi to w kilkadziesiąt sekund.
+FAST_REMAINING=0
+FAST_NOTES=""
+place_result() {
+  # $1 = pełne wyjście lv-place.py → sam JSON ostatniej linii LV_PLACE_RESULT
+  printf '%s\n' "$1" | grep '^LV_PLACE_RESULT ' | tail -1 | sed 's/^LV_PLACE_RESULT //'
+}
+fast_path() {
+  local queue="$1" py order betId slug res state reason detail ticket odds stake before after
+  py=$(python_bin) || { log "szybka ścieżka: brak python3 — wszystko idzie do modelu"; return 0; }
+  [ -f "$PLACE_PY" ] || { log "szybka ścieżka: brak $PLACE_PY"; return 0; }
+  while IFS= read -r order; do
+    [ -n "$order" ] || continue
+    betId=$(json_field "$order" betId)
+    slug=$(json_field "$order" bookmaker)
+    res=$(printf '%s' "$order" | LV_AGENT_CONFIG_FILE="$AGENT_CONFIG_FILE" BU_CDP_URL="$CDP" "$py" "$PLACE_PY" prepare 2>> "$LOG") || true
+    res=$(place_result "$res")
+    state=$(json_field "$res" state); reason=$(json_field "$res" reason); detail=$(json_field "$res" detail)
+    log "skrypt $slug $betId: prepare → ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}"
+    case "$state" in
+      ready)
+        if ! lv_api 15 claim "$betId" >> "$LOG" 2>&1; then
+          log "skrypt $slug $betId: claim odrzucony — pomijam (powód w logu wyżej)"
+          continue
+        fi
+        res=$(printf '%s' "$order" | LV_AGENT_CONFIG_FILE="$AGENT_CONFIG_FILE" BU_CDP_URL="$CDP" "$py" "$PLACE_PY" commit 2>> "$LOG") || true
+        res=$(place_result "$res")
+        state=$(json_field "$res" state); reason=$(json_field "$res" reason); detail=$(json_field "$res" detail)
+        ticket=$(json_field "$res" ticketId); odds=$(json_field "$res" actualOdds); stake=$(json_field "$res" actualStake)
+        before=$(json_field "$res" balanceBefore); after=$(json_field "$res" balanceAfter)
+        log "skrypt $slug $betId: commit → ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}${ticket:+ kupon $ticket}"
+        case "$state" in
+          placed)
+            lv_api 20 placed "$betId" "${ticket:--}" "${odds:-null}" ${stake:+"$stake"} ${before:+"$before"} ${after:+"$after"} >> "$LOG" 2>&1 \
+              || log "OSTRZEŻENIE: raport placed $betId nie przeszedł — sprawdź kupon ${ticket:-?} i dopnij: lv-api.sh attach"
+            ;;
+          skipped) lv_api 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+          failed|not_logged_in) lv_api 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+          *)
+            # Claim jest już nasz, a zlecenie nie wróci do kolejki samo: oddaj je
+            # serwerowi kodem technicznym (wraca do kolejki od razu, licznik prób).
+            lv_api 15 failed "$betId" page_error "skrypt: ${reason:-brak wyniku} — ${detail:-}" >> "$LOG" 2>&1 || true
+            FAST_REMAINING=$((FAST_REMAINING + 1))
+            FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
+"
+            ;;
+        esac
+        ;;
+      skipped) lv_api 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+      failed) lv_api 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+      not_logged_in)
+        # Bramka logowania po stronie serwera: zlecenie wraca do kolejki bez próby,
+        # a stan logowania tego konsumenta zamyka kolejkę buka do następnego raportu.
+        lv_api 15 session "$slug" logged_out "" not_logged_in "${detail:-skrypt nie widzi sesji}" >> "$LOG" 2>&1 || true
+        ;;
+      *)
+        FAST_REMAINING=$((FAST_REMAINING + 1))
+        FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
+"
+        ;;
+    esac
+  done < <(printf '%s' "$queue" | "$py" -c '
+import json, sys
+for o in json.load(sys.stdin):
+    if not isinstance(o, dict): continue
+    if o.get("bookmaker") not in ("sts", "superbet") or o.get("loginBlocked") or o.get("legs"): continue
+    if o.get("authorizationLevel") == "confirm_each" and not o.get("userApproved"): continue
+    print(json.dumps(o, ensure_ascii=False))
+' 2>> "$LOG")
+}
+
 # --- kolejka bez LLM ---------------------------------------------------------
 load_env
 if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
@@ -796,6 +872,26 @@ ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl 
 # zajmie się resztą kolejki, a LasVegas i użytkownik znają już powód.
 ensure_logins "$QUEUE"
 
+# Znacznik początku cyklu — od niego liczy się podsumowanie na Telegram
+# (potwierdzenia skryptu i modelu razem).
+CYCLE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Najpierw skrypt (bez modelu). Do modelu idzie tylko to, czego skrypt nie umiał,
+# oraz zaległe weryfikacje kuponów.
+fast_path "$QUEUE"
+VERIFICATIONS=$(lv_api 15 verifications 2>/dev/null || echo "[]")
+if [ "$FAST_REMAINING" -eq 0 ] && [ "$(printf '%s' "$VERIFICATIONS" | tr -d '[:space:]')" = "[]" ]; then
+  log "skrypt obsłużył wszystkie zlecenia — sesja modelu niepotrzebna"
+  logout_bookmakers "$QUEUE"
+  send_cycle_digest "$CYCLE_START"
+  exit 0
+fi
+FAST_PROMPT=""
+if [ -n "$FAST_NOTES" ]; then
+  FAST_PROMPT=" Skrypt lv-place.py NIE poradził sobie z tymi zleceniami (zacznij od tego kroku wg playbooka, po naprawie DOKUMENTUJ playbook):
+$FAST_NOTES"
+fi
+
 # UWAGA: nie używać „exec" — zastąpiłby shell i trap EXIT nigdy by nie zwolnił locka.
 # „${ARR[@]+…}" zamiast zwykłego rozwinięcia w cudzysłowach: macOS ma bash 3.2,
 # a tam pusta tablica pod
@@ -806,10 +902,9 @@ MODEL_ARGS=()
 # Hermesa, a lv-api.sh świadomie nie czyta konfiguracji z dysku (skaner skilli
 # traktuje sięganie skilla do magazynu poświadczeń jak exfiltrację). Bez tego
 # agent zależałby od tego, czy Hermes sam eksportuje swój .env do narzędzi.
-CYCLE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
   "$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
-  -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury" \
+  -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury.$FAST_PROMPT" \
   2>&1 | tee -a "$LOG" > "$LAST_RUN"
 rc=${PIPESTATUS[0]}
 
