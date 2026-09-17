@@ -20,6 +20,7 @@
 #         lv-executor-cycle.sh ensure-chrome   # tylko podnieś przeglądarkę agenta
 #         lv-executor-cycle.sh credentials sts # zapisz login+hasło do buka (lokalnie, chmod 600)
 #         lv-executor-cycle.sh login [superbet|sts|https://adres]  # zaloguj skryptem; gdy się nie da — okno dla Ciebie
+#         lv-executor-cycle.sh logout [superbet|sts]                # zamknij sesję u buka (limit czasu gry)
 #         lv-executor-cycle.sh session sts logged_in [saldo]      # zgłoś stan logowania ręcznie
 #
 # Pełna pętla logowania (od 1.5.0): przed obudzeniem agenta cykl sam sprawdza
@@ -198,6 +199,36 @@ ensure_logins() {
   local slug
   for slug in $(queue_bookmakers "$1"); do
     login_bookmaker "$slug" || true
+  done
+}
+
+# Wylogowanie PO pracy. Bukmacherzy liczą czas zalogowania do dziennego limitu
+# gry (STS: „Osiągnięto dzienny limit czasu gry" po kilku sesjach agenta, 01.09),
+# a sesja trzymana między cyklami zjada limit sama. Meldunek `session_closed`
+# jest celowy: LasVegas nie robi z niego alarmu, a przy zleceniu cykl loguje
+# ponownie. LV_KEEP_SESSION=1 wyłącza (np. gdy buk za każdym razem żąda captchy).
+logout_bookmaker() {
+  local slug="$1" py state reason detail
+  py=$(python_bin) || { log "BŁĄD: brak python3 — nie wyloguję $slug"; return 1; }
+  LOGOUT_RESULT=$(BU_CDP_URL="$CDP" "$py" "$LOGIN_PY" "$slug" --logout 2>> "$LOG") || true
+  state=$(json_field "$LOGOUT_RESULT" state)
+  reason=$(json_field "$LOGOUT_RESULT" reason)
+  detail=$(json_field "$LOGOUT_RESULT" detail)
+  if [ "$state" = "logged_out" ]; then
+    log "wylogowanie $slug: ${detail:-ok}"
+    lv_api 15 session "$slug" logged_out "" session_closed "${detail:-wylogowano po cyklu}" > /dev/null 2>&1 \
+      || log "OSTRZEŻENIE: nie zgłoszono session_closed $slug do LasVegas"
+    return 0
+  fi
+  log "OSTRZEŻENIE: $slug nadal zalogowany po próbie wylogowania (${reason:-brak wyniku}${detail:+ — $detail})"
+  return 1
+}
+
+logout_bookmakers() {
+  local slug
+  [ "${LV_KEEP_SESSION:-0}" = "1" ] && { log "LV_KEEP_SESSION=1 — sesje zostają otwarte"; return 0; }
+  for slug in $(queue_bookmakers "$1"); do
+    logout_bookmaker "$slug" || true
   done
 }
 notify() {
@@ -493,10 +524,28 @@ case "${1:-cycle}" in
     ensure_chrome || exit 1
     if login_bookmaker "$CRED_SLUG"; then
       echo "Działa: $LOGIN_RESULT"
+      # Sesja próbna nie ma prawa wisieć i zjadać limitu czasu gry.
+      logout_bookmaker "$CRED_SLUG" && echo "Sesja próbna zamknięta (limit czasu gry u buka)."
       exit 0
     fi
     echo "Nie udało się: ${LOGIN_RESULT:-brak wyniku}"
     echo "Gdy powód to captcha/kod SMS: $0 login $CRED_SLUG (okno dla Ciebie)."
+    exit 1
+    ;;
+  logout)
+    # logout <sts|superbet> — zamknij sesję u buka i zamelduj `session_closed`.
+    case "${2:-}" in
+      sts|superbet) ;;
+      *) echo "użycie: $0 logout <sts|superbet>" >&2; exit 2 ;;
+    esac
+    load_env
+    [ -n "${LV_EXECUTOR_TOKEN:-}" ] || { echo "BŁĄD: brak tokenu urządzenia w $ENV_FILE." >&2; exit 2; }
+    ensure_chrome || exit 1
+    if logout_bookmaker "$2"; then
+      echo "Sesja $2 zamknięta: $LOGOUT_RESULT"
+      exit 0
+    fi
+    echo "Nie udało się wylogować: ${LOGOUT_RESULT:-brak wyniku}" >&2
     exit 1
     ;;
   session)
@@ -515,7 +564,7 @@ case "${1:-cycle}" in
     ;;
   cycle) ;;
   *)
-    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|credentials <sts|superbet>|login [superbet|sts|https://adres]|session <slug> <logged_in|logged_out> [saldo] [reason] [detail]]" >&2
+    echo "użycie: $0 [cycle|selfupdate|ensure-chrome|credentials <sts|superbet>|login [superbet|sts|https://adres]|logout <sts|superbet>|session <slug> <logged_in|logged_out> [saldo] [reason] [detail]]" >&2
     exit 2
     ;;
 esac
@@ -608,6 +657,9 @@ LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
   -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury" \
   2>&1 | tee -a "$LOG" > "$LAST_RUN"
 rc=${PIPESTATUS[0]}
+
+# Sesje u buków zamykamy zaraz po pracy — niezależnie od tego, jak skończył agent.
+logout_bookmakers "$QUEUE"
 
 # Powiadomienia o porażkach wymagających człowieka — deterministycznie z wyjścia biegu.
 if grep -q "not_logged_in" "$LAST_RUN"; then

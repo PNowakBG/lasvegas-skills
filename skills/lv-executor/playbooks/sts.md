@@ -206,5 +206,7 @@ przy złej kwocie.
 - **Dzienny limit czasu gry (Odpowiedzialna gra) liczy CZAS SESJI, także sesje agenta.**
   Bieg 35–40 min ×4 w jeden dzień zjada limit sam z siebie — im krótsza sesja, tym lepiej;
   nie „szukaj" po stronie dłużej niż potrzeba (krok 3: bezpośredni URL meczu).
+  Po pracy sesję ZAMYKA `lv-login.py sts --logout` (cykl albo Ty — SKILL.md pkt 10);
+  sesja trzymana między cyklami zjada limit sama.
 - Wylogowanie w trakcie (znów widać `Zaloguj się`) → `failed not_logged_in`.
 - Nie klikaj `Postaw` dwa razy — po kliknięciu czekaj na ekran potwierdzenia.
