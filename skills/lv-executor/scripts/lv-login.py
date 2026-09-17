@@ -206,6 +206,56 @@ def dismiss_cookies():
             time.sleep(0.8)
             return
 
+
+def known_overlays(slug):
+    # Rejestr znanych okien z LasVegas (agent-config → overlays.<slug>), zapisany
+    # przez cykl do pliku. Brak pliku/pola = pusta lista — cookies i ekran
+    # powitalny i tak obsługują funkcje wyżej.
+    path = os.environ.get("LV_AGENT_CONFIG_FILE", "")
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return []
+    entries = (data.get("overlays") or {}).get(slug) if isinstance(data, dict) else None
+    return [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
+
+
+def dismiss_known_overlays(slug):
+    # Deterministycznie, przed modelem: każdy wpis to selektor CSS albo tekst
+    # przycisku plus akcja (click / remove / escape). Nic wykonywalnego nie
+    # przychodzi z serwera — tylko opis, co i jak kliknąć.
+    closed = 0
+    for entry in known_overlays(slug):
+        action = entry.get("action") or "click"
+        selector = entry.get("selector")
+        text = entry.get("buttonText")
+        done = False
+        if action == "escape":
+            try:
+                press_key("Escape")
+                done = True
+            except Exception:
+                done = False
+        elif selector and action == "remove":
+            done = js_bool(
+                "(() => { const n = document.querySelectorAll(%s); n.forEach(e => e.remove()); return n.length > 0; })()"
+                % json.dumps(selector)
+            )
+        elif selector:
+            done = js_bool(
+                "(() => { const e = document.querySelector(%s); if (!e || e.getBoundingClientRect().width === 0) return false; e.click(); return true; })()"
+                % json.dumps(selector)
+            )
+        elif text:
+            done = click_by_label(text)
+        if done:
+            closed += 1
+            time.sleep(0.6)
+    return closed
+
 def captcha_visible():
     # hCaptcha/reCAPTCHA renderuje wyzwanie w iframe; niewidzialna wersja NIE ma
     # widocznej ramki — liczy się tylko ramka wyzwania (frame=challenge) na ekranie.
@@ -253,6 +303,7 @@ def sts_login():
     time.sleep(1.5)
     dismiss_cookies()
     sts_dismiss_welcome()
+    dismiss_known_overlays("sts")
     if wait_until(STS_LOGGED, 8):
         return out("logged_in", balance=sts_balance())
     if CHECK_ONLY:
@@ -296,6 +347,7 @@ def sts_logout():
     wait_until("!!document.body && document.body.innerText.length > 200", 20)
     time.sleep(1.5)
     dismiss_cookies()
+    dismiss_known_overlays("sts")
     sts_dismiss_welcome()
     if not js_bool(STS_LOGGED):
         return out("logged_out", "session_closed", "sesja była już zamknięta")
@@ -319,6 +371,7 @@ def sb_login():
     wait_until("!!document.body && document.body.innerText.length > 200", 20)
     time.sleep(1.5)
     dismiss_cookies()
+    dismiss_known_overlays("superbet")
     if wait_until(SB_LOGGED, 5):
         return out("logged_in")
     if CHECK_ONLY:
@@ -355,6 +408,7 @@ def sb_logout():
     wait_until("!!document.body && document.body.innerText.length > 200", 20)
     time.sleep(1.5)
     dismiss_cookies()
+    dismiss_known_overlays("superbet")
     if not js_bool(SB_LOGGED):
         return out("logged_out", "session_closed", "sesja była już zamknięta")
     if click_logout_control() and wait_until("!(" + SB_LOGGED + ")", 15):
@@ -414,6 +468,9 @@ def run_harness(
     env["LV_LOGIN_PASS"] = password or ""
     shot = HERMES_HOME / f"lv-login-{slug}.png"
     env["LV_LOGIN_SHOT"] = str(shot)
+    # Rejestr znanych okien (zapisany przez cykl z agent-config) — także przy
+    # ręcznym uruchomieniu bez cyklu, jeśli plik istnieje.
+    env.setdefault("LV_AGENT_CONFIG_FILE", str(HERMES_HOME / "lv-agent-config.json"))
     try:
         proc = subprocess.run(
             cli,

@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.4
+version: 1.5.5
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -131,7 +131,21 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    — salda odczytane wg playbooka przed i po postawieniu, liczby z kropką
    (`130,50 zł` → `130.50`). Bez sald serwer nie uzgodni budżetu i nie odświeży
    salda konta w LasVegas.
-   Błąd w kroku 7-8: NIE raportuj porażki od razu — najpierw tryb SAMONAPRAWY
+   **Techniczna porażka PRZED kliknięciem „Postaw”** (okno zasłania kupon, strona
+   wygląda inaczej, timeout, błąd strony, nie da się dojść do meczu): najpierw
+   ponów RAZ w tym samym biegu — przeładuj `eventUrl`, zamknij okna (lista
+   znanych okien jest w `~/.hermes/lv-agent-config.json` → `overlays.<slug>`;
+   nieznane zamknij przez „X”/„Zamknij”/Escape i ZGŁOŚ:
+   `bash scripts/lv-api.sh overlay <slug> "<opis>" "<selektor CSS>" ["<tekst przycisku>"]`
+   — od następnego cyklu zamyka je skrypt logowania u wszystkich użytkowników)
+   i wykonaj kroki 6–7 ponownie. Druga porażka → `bash scripts/lv-api.sh failed <betId> <kod> "<szczegół>"`
+   z kodem technicznym: `overlay_blocked`, `selftest_failed_dom_changed`,
+   `page_error`, `timeout`, `navigation_failed`, `browser_error`, `event_not_found`.
+   Serwer NIE wysyła takiego zlecenia na weryfikację (nic nie kliknięto) — wraca
+   do kolejki od razu i dostaje kolejną próbę w następnym cyklu, po trzeciej
+   kończy jako FAILED z powiadomieniem. Tych kodów NIGDY nie używaj po
+   kliknięciu „Postaw” — wtedy obowiązuje akapit niżej.
+   Błąd w kroku 7-8 PO kliknięciu (albo niepewność, czy kupon wszedł): NIE raportuj porażki od razu — najpierw tryb SAMONAPRAWY
    playbooka (`references/learning-procedure.md`); dopiero druga porażka pod rząd
    → `bash scripts/lv-api.sh failed <betId> <powód> "<co dokładnie pokazał bukmacher>"` i powiadom
    użytkownika w czacie. Detail jest obowiązkowy jak przy `skipped` — komunikat buka
@@ -174,7 +188,10 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - Windows: resync real-profile wymaga CAŁKOWITEJ zamkniętej przeglądarki
   (też instancja tray/background). Jeśli sesja wychodzi niezalogowana — najpierw
   to sprawdź.
-- Popupy cookies/RODO przy pierwszym wejściu na buka — zaakceptuj wg playbooka.
+- Popupy cookies/RODO i inne okna: skrypt logowania (Krok 0) zamyka znane
+  z rejestru LasVegas (`overlays` w agent-config); nowe zamknij sam i zgłoś
+  `bash scripts/lv-api.sh overlay …` (krok 9) — rejestr jest wspólny dla
+  wszystkich użytkowników, więc następnym razem zrobi to skrypt.
 - Limity stawek bukmachera (min/max) — gdy buk odrzuca stawkę z powodu limitu,
   to `failed: bookmaker_limit`, nie próbuj zmieniać stawki.
 - 2FA/SCA przy płatnościach — nie dotyczy samych zakładów, ale wylogowanie
