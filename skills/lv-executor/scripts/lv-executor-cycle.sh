@@ -79,6 +79,8 @@ SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Poświadczenia bukmacherów — OSOBNY plik (nie konfiguracja Hermesa), którego
 # nie czyta żadne narzędzie modelu; sięga do niego tylko lv-login.py.
 CREDENTIALS_FILE="$HERMES_HOME/lv-bookmakers.env"
+# Ostatnia odpowiedź agent-config (model, przełączniki, znane okna) — patrz agent_config.
+AGENT_CONFIG_FILE="$HERMES_HOME/lv-agent-config.json"
 LOGIN_PY="$SKILL_DIR/scripts/lv-login.py"
 
 # Samoaktualizacja z tapa. Instalator kładzie skill w ~/.hermes/skills/lv-executor
@@ -138,6 +140,9 @@ device_report() {
 agent_config() {
   local json model provider
   json=$(lv_api 10 agent-config "$(device_report)" 2>/dev/null) || return 1
+  # Cała odpowiedź do pliku: lv-login.py czyta stąd rejestr znanych okien
+  # (overlays.<slug>) i zamyka je przed logowaniem — bez parsowania JSON-a w bashu.
+  printf '%s' "$json" > "$AGENT_CONFIG_FILE" 2>/dev/null || true
   model=$(printf '%s' "$json" | sed -n 's/.*"model"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   provider=$(printf '%s' "$json" | sed -n 's/.*"provider"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   # Przełącznik Telegrama z aplikacji (Ustawienia → Powiadomienia → „Agent
@@ -280,7 +285,7 @@ json_field() {
 login_bookmaker() {
   local slug="$1" mode="${2:-}" py state reason detail balance
   py=$(python_bin) || { log "BŁĄD: brak python3 — lv-login.py nie ma czym ruszyć"; return 1; }
-  LOGIN_RESULT=$(LV_LOGIN_FILE="$CREDENTIALS_FILE" BU_CDP_URL="$CDP" \
+  LOGIN_RESULT=$(LV_LOGIN_FILE="$CREDENTIALS_FILE" LV_AGENT_CONFIG_FILE="$AGENT_CONFIG_FILE" BU_CDP_URL="$CDP" \
     "$py" "$LOGIN_PY" "$slug" $mode 2>> "$LOG") || true
   state=$(json_field "$LOGIN_RESULT" state)
   reason=$(json_field "$LOGIN_RESULT" reason)

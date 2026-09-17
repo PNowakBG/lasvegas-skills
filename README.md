@@ -67,6 +67,16 @@ każdego cyklu przez Bot API — samo `sendMessage`, bez `getUpdates`, więc nie
 przeszkadza Twojemu botowi na long pollingu ani nie wymaga bramki Hermesa.
 Przełącznik on/off: LasVegas → Ustawienia → Powiadomienia.
 
+## Ponowienia i okna
+
+Techniczna porażka przed kliknięciem „Postaw” (okno nad kuponem, zmieniony
+układ strony, timeout) to jedno ponowienie w tym samym biegu, a potem powrót
+zlecenia do kolejki od razu, do trzech prób. Znane okna (cookies, ekrany
+powitalne, promocje) zamyka `scripts/lv-login.py` z rejestru LasVegas, zanim
+model zacznie pracę; nowe okno model zamyka sam i zgłasza
+`lv-api.sh overlay <buk> <opis> [selektor] [tekst przycisku]` — od następnego
+cyklu korzystają z tego wszyscy użytkownicy.
+
 ## Meldunek do LasVegas
 
 Przy każdym cyklu agent dokleja do pytania o model krótki meldunek o tym

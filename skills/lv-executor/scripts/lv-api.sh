@@ -75,7 +75,7 @@ cmd="${1:-help}"
 # Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
 # WYKONANIA komendy, a nie w „auth_header" — powód w komentarzu przy nim.
 case "$cmd" in
-  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest)
+  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest|overlay)
     require_token
     ;;
 esac
@@ -183,6 +183,27 @@ case "$cmd" in
     report="${2:-}"
     api_curl -H "$(auth_header)" "$BASE/agent-config${report:+?$report}"
     ;;
+  overlay)
+    # overlay <bookmaker> <label> [selector] [buttonText] [action]
+    #
+    # Zgłoszenie okna (cookies, promocja, ekran powitalny), które trzeba było
+    # zamknąć, żeby dojść do kuponu albo formularza logowania. Rejestr jest
+    # wspólny dla wszystkich użytkowników: od następnego cyklu zamyka je skrypt
+    # logowania (lv-login.py) — model nie musi tego odkrywać od nowa. Podaj
+    # selektor CSS elementu do kliknięcia ALBO tekst przycisku (regex, np.
+    # „^Zamknij”); akcja: click (domyślna), remove (usuń element), escape.
+    bookmaker="${2:-}"
+    label="${3:-}"
+    [[ -n "$bookmaker" && -n "$label" ]] || { echo "BŁĄD: overlay wymaga sluga bukmachera i opisu okna." >&2; exit 2; }
+    esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    body=$(printf '{"bookmaker":"%s","label":"%s"' "$(esc "$bookmaker")" "$(esc "$label")")
+    [[ -n "${4:-}" ]] && body="$body,\"selector\":\"$(esc "$4")\""
+    [[ -n "${5:-}" ]] && body="$body,\"buttonText\":\"$(esc "$5")\""
+    [[ -n "${6:-}" ]] && body="$body,\"action\":\"$(esc "$6")\""
+    body="$body}"
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "$body" "$BASE/overlays"
+    ;;
   session-policy)
     # Czy po pracy wylogować się z buka — ustawienie z panelu bukmachera w
     # LasVegas (domyślnie tak: limit czasu gry). Cykl czyta to przed wylogowaniem.
@@ -238,6 +259,7 @@ lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config [meldunek]         model agenta z LasVegas (provider + model) — pyta o to cykl; meldunek = skill=…&os=…&creds=…&telegram=…
   session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
+  overlay <buk> <opis> [selektor] [tekstPrzycisku] [click|remove|escape]   zgłoś okno, które trzeba było zamknąć (rejestr wspólny)
   digest <sinceISO>               podsumowanie potwierdzeń tego urządzenia od chwili (linie na Telegram)
   session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
