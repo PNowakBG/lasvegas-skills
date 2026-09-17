@@ -49,11 +49,20 @@ auth_header() {
 # dotyka tokenu urządzenia. Nagłówek powstaje w „auth_header", więc token nigdy
 # nie stoi w linii polecenia curl — dzięki temu da się go prześwietlić w jednym
 # miejscu zamiast szukać po całym skillu. Nowe wywołania API dopisuj TUTAJ.
+# „--fail-with-body” (curl ≥ 7.76): kod wyjścia jak przy „-f”, ale treść błędu
+# zostaje na stdout — bez tego 404 z API było nieme i agent pisał własnego
+# klienta HTTP, żeby zobaczyć „Nie znaleziono zlecenia do potwierdzenia”
+# (17.09). Starszy curl dostaje zwykłe „-f”.
+if curl --fail-with-body --version > /dev/null 2>&1; then
+  CURL_FAIL="--fail-with-body"
+else
+  CURL_FAIL="-f"
+fi
 api_curl() {
   if [[ -n "${LV_API_TIMEOUT:-}" ]]; then
-    curl -fsS --max-time "$LV_API_TIMEOUT" "$@"
+    curl "$CURL_FAIL" -sS --max-time "$LV_API_TIMEOUT" "$@"
   else
-    curl -fsS "$@"
+    curl "$CURL_FAIL" -sS "$@"
   fi
 }
 
@@ -75,7 +84,7 @@ cmd="${1:-help}"
 # Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
 # WYKONANIA komendy, a nie w „auth_header" — powód w komentarzu przy nim.
 case "$cmd" in
-  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest|overlay)
+  orders|claim|placed|attach|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest|overlay)
     require_token
     ;;
 esac
@@ -90,27 +99,52 @@ case "$cmd" in
     api_curl -X POST -H "$(auth_header)" "$BASE/queue/$betId/claim"
     ;;
   placed)
-    # placed <betId> <ticketId> <actualOdds> [actualStake] [balanceBefore] [balanceAfter]
+    # placed <betId> <ticketId|-> <actualOdds> [actualStake] [balanceBefore] [balanceAfter]
     #
     # Salda są opcjonalne składniowo, ale gdy playbook je odczytał — PODAJ OBA.
     # Serwer porównuje „ile wg naszych ksiąg miało ubyć" z „ile realnie ubyło"
     # (reconcileBalances) i przy rozjeździe WYŁĄCZA regułę auto-place. Bez sald
     # ten bezpiecznik dla toru agenta nie istnieje, a lustro salda konta w
     # LasVegas nigdy się nie odświeża. Liczby z kropką: „Depozyt 130,50 zł" → 130.50.
+    # Brak numeru kuponu w UI/sieci → podaj „-” (pole pominięte). NIGDY betId:
+    # fałszywy numer psuje weryfikację, podsumowania i porównanie z kontem
+    # (17.09: agent wpisał betId jako numer kuponu „w ostateczności”).
     betId="$2"
     ticketId="$3"
     actualOdds="${4:-null}"
     actualStake="${5:-}"
     balanceBefore="${6:-}"
     balanceAfter="${7:-}"
-    body=$(printf '{"success":true,"ticketId":"%s","actualOdds":%s,"aborted":false' \
-      "$ticketId" "$actualOdds")
+    if [[ -n "$ticketId" && "$ticketId" != "-" && "$ticketId" != "$betId" ]]; then
+      body=$(printf '{"success":true,"ticketId":"%s","actualOdds":%s,"aborted":false' \
+        "$ticketId" "$actualOdds")
+    else
+      body=$(printf '{"success":true,"actualOdds":%s,"aborted":false' "$actualOdds")
+    fi
     [[ -n "$actualStake" ]] && body="$body,\"actualStake\":$actualStake"
     [[ -n "$balanceBefore" ]] && body="$body,\"balanceBefore\":$balanceBefore"
     [[ -n "$balanceAfter" ]] && body="$body,\"balanceAfter\":$balanceAfter"
     body="$body}"
     api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
+    ;;
+  attach)
+    # attach <betId> <ticketId> <actualOdds> [actualStake] [balanceBefore] [balanceAfter]
+    #
+    # „placed” zwrócił 404, a kupon JEST na koncie (saldo spadło, numer kuponu
+    # w „Moje kupony”): serwer zamknął zlecenie w trakcie biegu (rozszerzenie,
+    # kill switch, gwizdek). To dopina dowód kuponu do zamkniętego zlecenia —
+    # niczego nie stawia. Zlecenie z innym kuponem → 409; z tym samym → OK.
+    betId="$2"
+    ticketId="$3"
+    actualOdds="${4:-null}"
+    body=$(printf '{"ticketId":"%s","actualOdds":%s' "$ticketId" "$actualOdds")
+    [[ -n "${5:-}" ]] && body="$body,\"actualStake\":$5"
+    [[ -n "${6:-}" ]] && body="$body,\"balanceBefore\":$6"
+    [[ -n "${7:-}" ]] && body="$body,\"balanceAfter\":$7"
+    body="$body}"
+    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+      -d "$body" "$BASE/queue/$betId/attach"
     ;;
   failed)
     # failed <betId> <reason> [detail]
@@ -258,6 +292,7 @@ case "$cmd" in
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config [meldunek]         model agenta z LasVegas (provider + model) — pyta o to cykl; meldunek = skill=…&os=…&creds=…&telegram=…
+  attach <betId> <ticketId> <kurs> [stawka] [saldoPrzed] [saldoPo]   kupon wszedł, a „placed” dało 404 — dopnij dowód do zamkniętego zlecenia (nic nie stawia)
   session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
   overlay <buk> <opis> [selektor] [tekstPrzycisku] [click|remove|escape]   zgłoś okno, które trzeba było zamknąć (rejestr wspólny)
   digest <sinceISO>               podsumowanie potwierdzeń tego urządzenia od chwili (linie na Telegram)

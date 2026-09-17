@@ -185,7 +185,9 @@ przy złej kwocie.
    stawiającego kupon (url zawiera bet/coupon/ticket) — body odpowiedzi
    (`cdp("Network.getResponseBody", requestId=...)`) zawiera numer kuponu.
    Fallback: `Moje kupony` → `W grze` → najnowszy kupon → detal/numer.
-   Ostateczność (gdy oba zawiodą): ticketId = betId — lepsze to niż brak raportu.
+   Gdy oba zawiodą: raportuj BEZ numeru — `placed <betId> - <kurs> …` („-” w
+   miejscu ticketId). NIGDY nie wpisuj betId jako numeru kuponu: fałszywy
+   numer psuje weryfikację, podsumowanie na Telegram i porównanie z kontem.
 5. Odczytaj ponownie `Depozyt NNN,NN zł` → `balanceAfter`. Saldo powinno spaść dokładnie
    o stawkę (STS: z konta schodzi stawka brutto; „Możesz wygrać" liczone od stawki netto
    po podatku 12% — np. 2 zł → netto 1,76 zł → wygrana 5,19 zł przy kursie 2.95).
