@@ -67,6 +67,14 @@ każdego cyklu przez Bot API — samo `sendMessage`, bez `getUpdates`, więc nie
 przeszkadza Twojemu botowi na long pollingu ani nie wymaga bramki Hermesa.
 Przełącznik on/off: LasVegas → Ustawienia → Powiadomienia.
 
+## Stawianie skryptem
+
+Od 1.5.7 kupon u STS i Superbet stawia `scripts/lv-place.py` — bez modelu,
+w kilkadziesiąt sekund: wyszukiwarka, strona meczu, dokładna linia rynku,
+bramka kursu 2 %, stawka, weryfikacja kuponu, claim, jedno kliknięcie, numer
+kuponu i saldo. Model Hermesa dostaje tylko zlecenia, których skrypt nie umiał
+(`needs_model` z krokiem), i naprawia je wg playbooka.
+
 ## Ponowienia i okna
 
 Techniczna porażka przed kliknięciem „Postaw” (okno nad kuponem, zmieniony
