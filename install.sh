@@ -194,6 +194,23 @@ else
 fi
 say "Token zapisany do $ENV_FILE (plik .env Hermsa — nikt go nie wkleja w czat)."
 
+# --- 4.5. Poświadczenia bukmacherów (opcjonalnie, lokalnie) ------------------
+# Pełna pętla: agent loguje się sam skryptem (scripts/lv-login.py) z pliku
+# poświadczeń, który zostaje na TYM komputerze (chmod 600). Hasło nie idzie do
+# LasVegas ani do modelu. Bez tego kroku agent poprosi o zalogowanie w oknie.
+say "Poświadczenia bukmacherów (opcjonalnie): agent zaloguje się sam, gdy je zapiszesz."
+echo "    Zostają lokalnie w $HERMES_HOME/lv-bookmakers.env — LasVegas ich nie widzi."
+echo "    Pominięcie = agent poprosi Cię o zalogowanie w oknie przeglądarki."
+for CRED_SLUG in sts superbet; do
+  if ! read -r -p "Zapisać login i hasło do $CRED_SLUG? [t/N] " CRED_ANSWER < /dev/tty; then
+    break
+  fi
+  case "$CRED_ANSWER" in
+    t|T|tak|TAK|y|Y) bash "$CYCLE" credentials "$CRED_SLUG" < /dev/tty || warn "Poświadczenia $CRED_SLUG: próbne logowanie nie przeszło — sprawdź powyżej." ;;
+    *) ;;
+  esac
+done
+
 # --- 5. Autostart cyklu co 5 minut ------------------------------------------
 # launchd/systemd odpala CYKL (curl-only), nie sesję Hermesa: pusta kolejka ma
 # kosztować jedno żądanie HTTP, nie pełne wywołanie LLM. Historyczna lekcja:

@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.3.1
+version: 1.5.0
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -26,6 +26,9 @@ decyzji inwestycyjnych. Skill to tylko ręce: poll → claim → weryfikacja →
 
 Wymaga: `LV_EXECUTOR_TOKEN` (token urządzenia z LasVegas) i włączonego
 real-profile browsing w Hermesie (`browser.use_real_profile: true`).
+Logowanie do bukmacherów robi za Ciebie `scripts/lv-login.py` — z poświadczeń
+zapisanych lokalnie przez `lv-executor-cycle.sh credentials <slug>`. Ty tych
+poświadczeń NIE czytasz i NIE wpisujesz.
 
 Token przychodzi **wyłącznie ze środowiska procesu** — skrypty skilla nie czytają
 plików z sekretami. Wstrzykuje go `lv-executor-cycle.sh` (wpis usługi: launchd na
@@ -56,22 +59,31 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
 **Krok 0 — logowanie bukmacherów.** Pobierz kolejkę SAM na starcie:
 `bash scripts/lv-api.sh orders` — nie czekaj z tym na krok 1 (pusta lista =
 koniec cyklu, bez otwierania przeglądarki). Serwer oddaje w niej także zlecenia
-buków, o których wie, że jesteś wylogowany (albo raport `logged_in` ma więcej
-niż **30 minut**, `LOGIN_STATE_FRESH_MS`); takie zlecenia mają
-`loginBlocked: true`, a ich `claim` kończy się 404 — dlatego najpierw ustal
-stan logowania, zanim cokolwiek podbijesz. Bramka dotyczy sondowanych buków:
+buków, o których wie, że TWOJA przeglądarka jest wylogowana (albo Twój raport
+`logged_in` ma więcej niż **30 minut**, `LOGIN_STATE_FRESH_MS`); takie zlecenia
+mają `loginBlocked: true`, a ich `claim` kończy się 404 — dlatego najpierw ustal
+stan logowania, zanim cokolwiek podbijesz. Stan jest PER KONSUMENT: rozszerzenie
+w Chrome użytkownika ma własny, Ty własny. Bramka dotyczy sondowanych buków:
 **superbet** i **sts** (`betclic-pl` i `betfan` nie są sondowane; brak raportu
-= `unknown` też nie blokuje). Dla każdego bukmachera z `loginBlocked: true`
-w kolejce otwórz buka i zweryfikuj logowanie wg `playbooks/<slug>.md`:
-- **zalogowany** → `bash scripts/lv-api.sh session <slug> logged_in <saldo>`
-  (saldo z playbooka, liczba z kropką: `130,50 zł` → `130.50`) — raport
-  odblokowuje zlecenia tego buka i odświeża saldo konta w LasVegas; claimuj je
-  normalnie,
-- **niezalogowany** → poproś użytkownika o zalogowanie w otwartym oknie (jak
-  w kroku 5); gdy się nie uda → `bash scripts/lv-api.sh session <slug>
-  logged_out` i POMIŃ w tym cyklu zlecenia tego buka z `loginBlocked: true` —
-  `claim` odrzuciłby je 404. Zlecenia zostają w kolejce i podejmie je następny
-  cykl po zalogowaniu.
+= `unknown` też nie blokuje).
+
+Cykl (`lv-executor-cycle.sh`, macOS/Linux) loguje buki z kolejki ZANIM Cię
+obudzi i sam melduje `session`. Gdy mimo to widzisz `loginBlocked: true`
+(Windows bez cyklu, sesja wygasła w trakcie), dla każdego takiego buka uruchom:
+`python3 scripts/lv-login.py <slug>` (Windows: `python scripts\lv-login.py <slug>`).
+Skrypt sam sprawdza sesję i w razie potrzeby loguje z zapisanych poświadczeń;
+na stdout dostajesz JEDNĄ linię JSON — nigdy login ani hasło:
+- `"state":"logged_in"` → `bash scripts/lv-api.sh session <slug> logged_in <balance>`
+  (`balance` z JSON, gdy nie jest null) — raport odblokowuje zlecenia tego buka;
+  claimuj je normalnie,
+- `"state":"logged_out"` → `bash scripts/lv-api.sh session <slug> logged_out "" <reason> "<detail>"`
+  (reason i detail PRZEPISZ z JSON: `captcha`, `two_factor`, `bad_credentials`,
+  `no_credentials`, `login_form_not_found`, `login_error`), powiedz użytkownikowi
+  w czacie jednym zdaniem, co ma zrobić (captcha/kod SMS → zalogować się w oknie
+  agenta; złe lub brak poświadczeń → `lv-executor-cycle.sh credentials <slug>`)
+  i POMIŃ w tym cyklu zlecenia tego buka — `claim` odrzuciłby je 404. Zlecenia
+  zostają w kolejce; podejmie je następny cykl po zalogowaniu. LasVegas sam
+  wysyła użytkownikowi powiadomienie z tym powodem.
 
 Krok 5 powtarza weryfikację na ekranie tuż przed kuponem — bramka patrzy na
 pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
@@ -90,13 +102,13 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
 5. **Weryfikacja logowania.** Otwórz `eventUrl` (deeplink z zlecenia; gdy
    `eventUrlKind: "home"` — otwórz stronę główną i WYSZUKAJ mecz wg
    `homeTeam`/`awayTeam` z playbooka). Sprawdź wg playbooka, czy jesteś
-   zalogowany. Niezalogowany: otwarte okno przeglądarki jest widoczne — powiedz
-   użytkownikowi w czacie: „Zaloguj się do <bukmacher> w otwartym oknie — poczekam",
-   czekaj i sprawdzaj ponownie co ~30 s (max 5 min), potem przejdź dalej.
-   Nadal niezalogowany → `bash scripts/lv-api.sh failed <betId> not_logged_in`
-   i następne zlecenie. Ta porażka zamyka też kolejkę tego buka po stronie
-   serwera (stan `logged_out`) — nie wysyłaj po niej dodatkowego
-   `session <slug> logged_out`. Zalogowanie udane → zaraportuj
+   zalogowany. Niezalogowany → `python3 scripts/lv-login.py <slug>` (jak w Kroku 0)
+   i po `logged_in` wróć do zlecenia (przeładuj `eventUrl`). Gdy skrypt oddał
+   `logged_out` → `bash scripts/lv-api.sh failed <betId> not_logged_in "<reason>: <detail>"`
+   i następne zlecenie: serwer NIE liczy tego jako próby — zlecenie wraca do
+   kolejki, a kolejka tego buka zamyka się dla Ciebie do następnego raportu
+   `logged_in` (nie wysyłaj po tym osobnego `session logged_out`; użytkownik
+   dostaje powiadomienie z powodem). Zalogowanie udane → zaraportuj
    `bash scripts/lv-api.sh session <slug> logged_in [saldo]` (świeży raport
    obowiązuje 30 minut, więc sesja z tego biegu pokrywa kolejne cykle).
 6. **Budowa kuponu.** Znajdź rynek i typ zlecenia (market/outcome/selectionDetail;
@@ -137,7 +149,9 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - NIE stawiaj bez pozytywnego kill-switcha z kroku 2.
 - NIE stawiaj stawki innej niż `stake` z zlecenia.
 - NIE stawiaj, gdy kupon nie przeszedł pełnej weryfikacji z kroku 7.
-- NIE loguj się hasłami z plików/URL-i — loguje się TYLKO użytkownik w otwartym oknie.
+- NIE wpisuj haseł sam, NIE czytaj i NIE wypisuj pliku poświadczeń
+  (`lv-bookmakers.env`) ani jego zawartości — logowanie wykonuje WYŁĄCZNIE
+  `scripts/lv-login.py`, a captcha/kod SMS rozwiązuje użytkownik w otwartym oknie.
 - NIE otwieraj stron poza domeną zlecenia (bukmacher) podczas egzekucji zleceń.
 
 ## Pitfalls
@@ -152,7 +166,8 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 - Limity stawek bukmachera (min/max) — gdy buk odrzuca stawkę z powodu limitu,
   to `failed: bookmaker_limit`, nie próbuj zmieniać stawki.
 - 2FA/SCA przy płatnościach — nie dotyczy samych zakładów, ale wylogowanie
-  po nieaktywności zdarza się często; wróć do kroku 5.
+  po nieaktywności zdarza się często; wróć do kroku 5 (`lv-login.py` zaloguje
+  ponownie; przy captchy/2FA oddaje sprawę użytkownikowi z powodem).
 - Snapshots dużych stron bywają obcięte (`truncated: true`) — czytaj pełny
   plik z `~/.hermes/cache/web/` zamiast zgadywać ref-id.
 
@@ -161,9 +176,10 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 Po biegu:
 - `bash scripts/lv-api.sh status` / LasVegas UI: zlecenia przeszły QUEUED → PLACED
   (lub FAILED z powodem).
-- `bash scripts/lv-api.sh session <slug> <logged_in|logged_out> [saldo]` wysłane
-  w Kroku 0 (i po udanym postawieniu) — LasVegas widzi świeży stan logowania
-  oraz saldo konta tego bukmachera.
+- `bash scripts/lv-api.sh session <slug> <logged_in|logged_out> [saldo] [reason] [detail]`
+  wysłane w Kroku 0 (i po udanym postawieniu) — LasVegas widzi świeży stan
+  logowania TWOJEJ przeglądarki, saldo konta tego bukmachera i — przy
+  `logged_out` — powód, z którego robi powiadomienie i baner „zaloguj agenta".
 - Audyt: pełny transkrypt sesji Hermesa (każde wywołanie narzędzia, w tym kod
   `browser_exec`) — `hermes sessions` / `hermes --resume <id>`. Nagrań wideo NIE ma:
   backend browser-use nie nagrywa mimo `browser.record_sessions`.

@@ -25,11 +25,15 @@ Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP
   `bash scripts/lv-api.sh session sts logged_in <saldo>` (liczba z kropką:
   `130,50 zł` → `130.50`) — meldunek Kroku 0 SKILL.md; powtórz go po udanym
   postawieniu, gdy saldo się zmieniło.
-- Niezalogowany: widać `Zaloguj się` i `Załóż konto`. Wtedy procedura logowania ze
-  SKILL.md (poproś użytkownika, czekaj ~30 s × max 5 min). Nadal niezalogowany →
-  `bash scripts/lv-api.sh session sts logged_out` i pomiń w tym cyklu zlecenia STS
-  z `loginBlocked: true` (`claim` odrzuciłby je 404); przy już claimniętym zleceniu
-  `failed not_logged_in`.
+- Niezalogowany: widać `Zaloguj się` i `Załóż konto`. Uruchom
+  `python3 scripts/lv-login.py sts` — skrypt zamyka ekran powitalny
+  („Kontynuuj jako gość”), otwiera modal logowania (`[data-testid="input-username"]`,
+  `[data-testid="input-password"]`), loguje z zapisanych poświadczeń i czeka na
+  `Depozyt`. STS ma NIEWIDZIALNĄ hCaptchę: gdy pokaże wyzwanie, skrypt oddaje
+  `reason: captcha` — wtedy loguje się użytkownik w oknie agenta, nie Ty.
+  Wynik `logged_out` → `bash scripts/lv-api.sh session sts logged_out "" <reason> "<detail>"`
+  i pomiń w tym cyklu zlecenia STS z `loginBlocked: true` (`claim` odrzuciłby
+  je 404); przy już claimniętym zleceniu `failed not_logged_in "<reason>"`.
 - Odczytaj saldo z tekstu `Depozyt NNN,NN zł` (prawy górny róg) → `balanceBefore`.
 
 ## Krok 3: nawigacja do meczu
