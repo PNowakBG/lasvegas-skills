@@ -206,7 +206,10 @@ ensure_logins() {
 # gry (STS: „Osiągnięto dzienny limit czasu gry" po kilku sesjach agenta, 01.09),
 # a sesja trzymana między cyklami zjada limit sama. Meldunek `session_closed`
 # jest celowy: LasVegas nie robi z niego alarmu, a przy zleceniu cykl loguje
-# ponownie. LV_KEEP_SESSION=1 wyłącza (np. gdy buk za każdym razem żąda captchy).
+# ponownie. Wyjątek (buk żąda captchy przy każdym logowaniu) ustawia użytkownik
+# W APLIKACJI (panel bukmachera → „Zamykaj sesję po pracy"); cykl czyta to z
+# GET /executor/session-policy. Żadnych przełączników w środowisku — nikt o
+# nich nie pamięta (właściciel, 17.09).
 logout_bookmaker() {
   local slug="$1" py state reason detail
   py=$(python_bin) || { log "BŁĄD: brak python3 — nie wyloguję $slug"; return 1; }
@@ -224,11 +227,25 @@ logout_bookmaker() {
   return 1
 }
 
+# Polityka sesji z LasVegas: „logoutAfterWork" per buk. Brak odpowiedzi albo
+# brak wpisu = wyloguj (bezpieczny domyślny kierunek: limit czasu gry).
+policy_logout_after_work() {
+  local slug="$1" chunk
+  chunk=$(printf '%s' "${SESSION_POLICY:-}" | grep -o "{[^{}]*\"bookmaker\"[[:space:]]*:[[:space:]]*\"$slug\"[^{}]*}" | head -1)
+  [ -n "$chunk" ] || return 0
+  printf '%s' "$chunk" | grep -q '"logoutAfterWork"[[:space:]]*:[[:space:]]*false' && return 1
+  return 0
+}
+
 logout_bookmakers() {
   local slug
-  [ "${LV_KEEP_SESSION:-0}" = "1" ] && { log "LV_KEEP_SESSION=1 — sesje zostają otwarte"; return 0; }
+  SESSION_POLICY=$(lv_api 10 session-policy 2>/dev/null) || SESSION_POLICY=""
   for slug in $(queue_bookmakers "$1"); do
-    logout_bookmaker "$slug" || true
+    if policy_logout_after_work "$slug"; then
+      logout_bookmaker "$slug" || true
+    else
+      log "$slug: „Zamykaj sesję po pracy” wyłączone w LasVegas — sesja zostaje"
+    fi
   done
 }
 notify() {
