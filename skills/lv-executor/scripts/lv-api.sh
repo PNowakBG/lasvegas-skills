@@ -75,7 +75,7 @@ cmd="${1:-help}"
 # Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
 # WYKONANIA komendy, a nie w „auth_header" — powód w komentarzu przy nim.
 case "$cmd" in
-  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session)
+  orders|claim|placed|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy)
     require_token
     ;;
 esac
@@ -180,6 +180,11 @@ case "$cmd" in
     # przez dostawcę — nie wymaga dotykania skryptów na maszynie.
     api_curl -H "$(auth_header)" "$BASE/agent-config"
     ;;
+  session-policy)
+    # Czy po pracy wylogować się z buka — ustawienie z panelu bukmachera w
+    # LasVegas (domyślnie tak: limit czasu gry). Cykl czyta to przed wylogowaniem.
+    api_curl -H "$(auth_header)" "$BASE/session-policy"
+    ;;
   session)
     # session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]
     #
@@ -221,6 +226,7 @@ case "$cmd" in
 lv-api.sh — API LasVegas dla egzekutora
   orders                          lista zleceń (poll)
   agent-config                    model agenta z LasVegas (provider + model) — pyta o to cykl
+  session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
   session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)
   verifications                   lista zleceń do weryfikacji (kupon mógł wejść bez potwierdzenia)
   verify <betId> <true|false> [ticketId] [detail]   rozstrzyga weryfikację (true = kupon na koncie)
