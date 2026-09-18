@@ -266,8 +266,21 @@ def captcha_visible():
     )
 
 def two_factor_visible():
-    txt = visible_text()
-    return bool(re.search(r"kod (sms|weryfikacyjny|jednorazowy)|wpisz kod|potwierd[zź] (logowanie|to[żz]samo)|dwuetapow|2fa", txt, re.I))
+    # Mocny sygnał: widoczne pole na kod (one-time-code / name z code|otp|sms).
+    if js_bool(
+        "[...document.querySelectorAll('input[autocomplete=\"one-time-code\"], input[name*=\"code\" i], input[name*=\"otp\" i], input[name*=\"sms\" i], input[id*=\"code\" i]')]"
+        ".some(i => i.getBoundingClientRect().width > 0)"
+    ):
+        return True
+    # Słaby sygnał: tekst o kodzie — ale tylko w dialogu/modalu, nie w tle strony
+    # (marketing Superbetu bywa pełen „potwierdź tożsamość”; 18.09 fałszywe 2FA).
+    txt = js_str(
+        "(() => { const d = [...document.querySelectorAll('[role=dialog], [class*=modal], [class*=dialog], [class*=login]')]"
+        ".filter(e => e.getBoundingClientRect().width > 0); return d.length ? d.map(e => e.innerText || '').join(' ').slice(0, 4000) : ''; })()"
+    )
+    if not txt:
+        return False
+    return bool(re.search(r"kod (sms|weryfikacyjny|jednorazowy)|wpisz kod|wys[łl]ali[śs]my (ci )?kod|potwierd[zź] (logowanie|to[żz]samo)|dwuetapow|2fa", txt, re.I))
 
 def error_text():
     txt = js_str(
@@ -413,13 +426,17 @@ def sb_logout():
         return out("logged_out", "session_closed", "sesja była już zamknięta")
     if click_logout_control() and wait_until("!(" + SB_LOGGED + ")", 15):
         return out("logged_out", "session_closed", "wylogowano przyciskiem")
-    clear_site_data(["https://superbet.pl", "https://www.superbet.pl"])
+    # NIGDY nie czyść danych witryny Superbetu: razem z sesją ginie zaufanie do
+    # urządzenia i każde kolejne logowanie kończy się kodem SMS (18.09: alert
+    # „potrzebny kod SMS/2FA” co 5 minut przez całą noc). Zamykamy samą sesję
+    # aplikacji — klucze użytkownika w localStorage — ciasteczka zostają.
+    js_bool("(() => { try { localStorage.removeItem('user'); localStorage.removeItem('users:sessionExpire'); sessionStorage.clear(); } catch (e) {} return true; })()")
     goto_url("https://superbet.pl/")
     wait_for_load(20)
     time.sleep(2.0)
     if not js_bool(SB_LOGGED):
-        return out("logged_out", "session_closed", "wylogowano przez wyczyszczenie danych witryny")
-    return out("logged_in", "logout_failed", "po próbie wylogowania sesja w localStorage nadal żyje")
+        return out("logged_out", "session_closed", "wylogowano przez zamknięcie sesji aplikacji (bez czyszczenia ciasteczek)")
+    return out("logged_in", "logout_failed", "po próbie wylogowania sesja w localStorage nadal żyje — zostaje otwarta (wyłącz „Zamykaj sesję po pracy” dla Superbet, jeśli tak ma być)")
 
 try:
     ensure_real_tab()
