@@ -305,12 +305,39 @@ login_bookmaker() {
     || log "OSTRZEŻENIE: nie zgłoszono logged_out $slug do LasVegas"
   case "$reason" in
     captcha) notify "LasVegas agent" "$slug: bukmacher pokazał captchę — zaloguj się w oknie agenta (lv-executor-cycle.sh login $slug)." ;;
-    two_factor) notify "LasVegas agent" "$slug: potrzebny kod SMS/2FA — zaloguj się w oknie agenta (lv-executor-cycle.sh login $slug)." ;;
-    bad_credentials|no_credentials) notify "LasVegas agent" "$slug: brak lub złe poświadczenia — uruchom: lv-executor-cycle.sh credentials $slug" ;;
+    two_factor) notify "LasVegas agent" "$slug: potrzebny kod SMS/2FA${detail:+ ($detail)} — zaloguj się RAZ w oknie agenta: lv-executor-cycle.sh login $slug. Kolejne próby wstrzymane, żeby nie wysyłać Ci SMS-a co 5 minut." ;;
+    bad_credentials|no_credentials) notify "LasVegas agent" "$slug: brak lub złe poświadczenia${detail:+ ($detail)} — uruchom: lv-executor-cycle.sh credentials $slug. Kolejne próby wstrzymane do poprawki." ;;
     not_logged_in) ;;  # tylko --check-only bez próby logowania — nic do zgłaszania
-    *) notify "LasVegas agent" "$slug: logowanie nie powiodło się ($reason) — zaloguj się w oknie agenta." ;;
+    *) notify "LasVegas agent" "$slug: logowanie nie powiodło się ($reason${detail:+: $detail}) — zaloguj się w oknie agenta: lv-executor-cycle.sh login $slug. Kolejne próby wstrzymane." ;;
+  esac
+  # Porażka wymagająca człowieka blokuje automatyczne logowanie tego buka (patrz
+  # login_blocked): każda próba to u Superbetu kolejny SMS do użytkownika.
+  case "$reason" in
+    captcha|two_factor|bad_credentials|no_credentials|login_form_not_found|login_error)
+      [ "$mode" = "--check-only" ] || printf '%s %s\n' "$reason" "$(date +%s)" > "$(login_block_file "$slug")" 2>/dev/null || true
+      ;;
   esac
   return 1
+}
+
+# Blokada automatycznego logowania po porażce wymagającej człowieka. Zdejmuje ją:
+# poprawka poświadczeń (`credentials`, plik nowszy niż blokada), ręczne
+# `login <buk>`, albo 6 godzin. 18.09: bez tego cykl próbował logować do
+# Superbetu co 5 minut, a każda próba = SMS z kodem do użytkownika i alert.
+LOGIN_BLOCK_TTL=$((6 * 3600))
+login_block_file() { printf '%s/lv-login-block-%s' "$HERMES_HOME" "$1"; }
+login_blocked() {
+  local f reason stamp now
+  f=$(login_block_file "$1")
+  [ -f "$f" ] || return 1
+  read -r reason stamp < "$f" 2>/dev/null || return 1
+  case "$stamp" in ''|*[!0-9]*) rm -f "$f"; return 1 ;; esac
+  now=$(date +%s)
+  if [ $((now - stamp)) -ge "$LOGIN_BLOCK_TTL" ]; then rm -f "$f"; return 1; fi
+  if [ -f "$CREDENTIALS_FILE" ] && [ "$(dir_mtime "$CREDENTIALS_FILE")" -gt "$stamp" ]; then rm -f "$f"; return 1; fi
+  LOGIN_BLOCK_REASON="$reason"
+  LOGIN_BLOCK_AGE_MIN=$(( (now - stamp) / 60 ))
+  return 0
 }
 
 # Buki sondowane (sts, superbet) z zleceniami w kolejce — dla nich cykl loguje
@@ -323,6 +350,10 @@ queue_bookmakers() {
 ensure_logins() {
   local slug
   for slug in $(queue_bookmakers "$1"); do
+    if login_blocked "$slug"; then
+      log "pomijam logowanie $slug: $LOGIN_BLOCK_REASON ($LOGIN_BLOCK_AGE_MIN min temu) — czekam na człowieka (credentials $slug / login $slug) albo 6 h"
+      continue
+    fi
     login_bookmaker "$slug" || true
   done
 }
@@ -373,10 +404,21 @@ logout_bookmakers() {
     fi
   done
 }
+NOTIFY_TTL=$((6 * 3600))
 notify() {
   # $1 = tytuł, $2 = treść. Log jest kanałem pewnym, powiadomienie tylko wygodnym:
   # z timera bez sesji graficznej notify-send nie ma gdzie dostarczyć komunikatu,
   # a sprawa wymagająca człowieka musi zostać zapisana tak czy inaczej.
+  # Ta sama treść nie idzie częściej niż raz na 6 h: 18.09 użytkownik dostawał
+  # „potrzebny kod SMS” co 5 minut przez całą noc (jeden cykl = jeden alert).
+  local key stamp
+  key=$(printf '%s' "$2" | cksum | cut -d' ' -f1)
+  stamp="$HERMES_HOME/lv-notify-$key"
+  if [ -f "$stamp" ] && [ $(( $(date +%s) - $(cat "$stamp" 2>/dev/null || echo 0) )) -lt "$NOTIFY_TTL" ]; then
+    log "POWIADOMIENIE (stłumione, to samo w ostatnich 6 h): $2"
+    return 0
+  fi
+  date +%s > "$stamp" 2>/dev/null || true
   log "POWIADOMIENIE: $1 — $2"
   # Sprawa dla człowieka idzie też na Telegram (gdy włączone w aplikacji).
   telegram_send "⚠️ $2" || true
@@ -604,6 +646,7 @@ case "${1:-cycle}" in
     # człowieka. Okno dla użytkownika otwieramy dopiero, gdy skrypt oddał sprawę
     # (captcha, kod SMS, brak poświadczeń).
     if [[ -n "$LOGIN_SLUG" ]]; then
+      rm -f "$(login_block_file "$LOGIN_SLUG")"
       load_env
       if [ -n "${LV_EXECUTOR_TOKEN:-}" ] && login_bookmaker "$LOGIN_SLUG"; then
         echo "Zalogowano do $LOGIN_SLUG skryptem i zgłoszono do LasVegas: $LOGIN_RESULT"
@@ -670,6 +713,7 @@ case "${1:-cycle}" in
     chmod 600 "$CREDENTIALS_FILE"
     unset CRED_PASS
     echo "Zapisano poświadczenia $CRED_SLUG w $CREDENTIALS_FILE (tylko Ty masz do niego dostęp)."
+    rm -f "$(login_block_file "$CRED_SLUG")"
     load_env
     if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
       echo "Brak tokenu urządzenia — pomijam próbne logowanie. Zainstaluj agenta komendą z LasVegas."
