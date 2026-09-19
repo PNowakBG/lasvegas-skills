@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.9
+version: 1.5.10
 platforms: [macos, linux, windows]
 metadata:
   hermes:

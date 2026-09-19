@@ -804,6 +804,8 @@ trap 'rm -rf "$LOCK"' EXIT
 # Hermesa dostaje tylko to, czego skrypt nie umiał (needs_model) — samonaprawa.
 # 17.09: model potrzebował 6–7 min na kupon; skrypt robi to w kilkadziesiąt sekund.
 FAST_REMAINING=0
+FAST_TRIED=0
+FAST_WAITING=0
 FAST_NOTES=""
 place_result() {
   # $1 = pełne wyjście lv-place.py → sam JSON ostatniej linii LV_PLACE_RESULT
@@ -815,6 +817,14 @@ fast_path() {
   [ -f "$PLACE_PY" ] || { log "szybka ścieżka: brak $PLACE_PY"; return 0; }
   while IFS= read -r order; do
     [ -n "$order" ] || continue
+    # Filtr niżej znakuje zlecenia, których skrypt nie rusza: MODEL = nie nasza
+    # ścieżka (inny buk, kupon łączony) → idzie do modelu; WAIT = czeka na
+    # logowanie albo zgodę użytkownika → zostaje w kolejce, ale NIE jest „obsłużone”.
+    case "$order" in
+      "MODEL "*) FAST_REMAINING=$((FAST_REMAINING + 1)); continue ;;
+      "WAIT "*) FAST_WAITING=$((FAST_WAITING + 1)); log "zlecenie czeka: ${order#WAIT }"; continue ;;
+    esac
+    FAST_TRIED=$((FAST_TRIED + 1))
     betId=$(json_field "$order" betId)
     slug=$(json_field "$order" bookmaker)
     res=$(printf '%s' "$order" | LV_AGENT_CONFIG_FILE="$AGENT_CONFIG_FILE" BU_CDP_URL="$CDP" "$py" "$PLACE_PY" prepare 2>> "$LOG") || true
@@ -867,8 +877,10 @@ fast_path() {
 import json, sys
 for o in json.load(sys.stdin):
     if not isinstance(o, dict): continue
-    if o.get("bookmaker") not in ("sts", "superbet") or o.get("loginBlocked") or o.get("legs"): continue
-    if o.get("authorizationLevel") == "confirm_each" and not o.get("userApproved"): continue
+    tag = "%s (%s)" % (o.get("betId"), o.get("bookmaker"))
+    if o.get("loginBlocked"): print("WAIT %s: loginBlocked" % tag); continue
+    if o.get("authorizationLevel") == "confirm_each" and not o.get("userApproved"): print("WAIT %s: brak zgody użytkownika" % tag); continue
+    if o.get("bookmaker") not in ("sts", "superbet") or o.get("legs"): print("MODEL %s" % tag); continue
     print(json.dumps(o, ensure_ascii=False))
 ' 2>> "$LOG")
 }
@@ -915,6 +927,11 @@ ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl 
 # Porażka nie zatrzymuje cyklu — agent dostanie zlecenia z loginBlocked i
 # zajmie się resztą kolejki, a LasVegas i użytkownik znają już powód.
 ensure_logins "$QUEUE"
+# Kolejka sprzed logowania ma `loginBlocked: true` (ostatni meldunek = wylogowanie
+# po poprzednim cyklu) — po świeżym `logged_in` pobieramy ją od nowa. 19.09: bez
+# tego skrypt odrzucał po cichu wszystkie zlecenia i cykl tylko logował/wylogowywał.
+# $QUEUE zostaje do wylogowania (lista buków, do których cykl się logował).
+WORK_QUEUE=$(queue_json) || { log "OSTRZEŻENIE: nie odświeżono kolejki po logowaniu — pracuję na starej"; WORK_QUEUE="$QUEUE"; }
 
 # Znacznik początku cyklu — od niego liczy się podsumowanie na Telegram
 # (potwierdzenia skryptu i modelu razem).
@@ -922,10 +939,10 @@ CYCLE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Najpierw skrypt (bez modelu). Do modelu idzie tylko to, czego skrypt nie umiał,
 # oraz zaległe weryfikacje kuponów.
-fast_path "$QUEUE"
+fast_path "$WORK_QUEUE"
 VERIFICATIONS=$(lv_api 15 verifications 2>/dev/null || echo "[]")
 if [ "$FAST_REMAINING" -eq 0 ] && [ "$(printf '%s' "$VERIFICATIONS" | tr -d '[:space:]')" = "[]" ]; then
-  log "skrypt obsłużył wszystkie zlecenia — sesja modelu niepotrzebna"
+  log "skrypt: spróbowano $FAST_TRIED zleceń, czeka (logowanie/zgoda) $FAST_WAITING — sesja modelu niepotrzebna"
   logout_bookmakers "$QUEUE"
   send_cycle_digest "$CYCLE_START"
   exit 0
