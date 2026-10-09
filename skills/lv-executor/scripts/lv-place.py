@@ -149,7 +149,7 @@ def text_has_team(text, team):
 # Drużyny młodzieżowe, rezerwy, kobiety: kafel z takim znacznikiem pasuje po nazwach
 # do meczu seniorów (09.10: „warszawa” + „krakow” → Escola Varsovia Warszawa U19 –
 # Wisła Kraków U19 zamiast Legia – Wisła). Znacznik musi być też w zleceniu.
-SQUAD_MARKERS = {"u16", "u17", "u18", "u19", "u20", "u21", "u22", "u23", "ii", "iii", "kobiety", "women", "rezerwy"}
+SQUAD_MARKERS = {"u16", "u17", "u18", "u19", "u20", "u21", "u22", "u23", "ii", "iii", "kobiety", "women", "ladies", "rezerwy"}
 
 def squad_markers(text):
     toks = set(re.split(r"[^a-z0-9]+", norm(text)))
@@ -341,20 +341,25 @@ def sts_desktop_viewport():
         pass
     time.sleep(0.5)
 
-def sts_tile_href(home, away):
-    tiles = js_val("[...document.querySelectorAll('a[href*=\"/kursy/\"]')].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 40)") or []
+def best_event_href(selector, home, away, href_ok):
+    """Kafel wyniku wyszukiwania z największym pokryciem nazw OBU drużyn (team_coverage)."""
+    tiles = js_val("[...document.querySelectorAll(%s)].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 40)" % json.dumps(selector)) or []
     best, best_score = "", 0
     for t in tiles:
         href = t.get("href", "")
         text = norm(t.get("text", "") + " " + href.replace("-", " "))
-        # Esporty („B Dortmund (Bjela)”) też pasują po nazwach drużyn: nawias w adresie
-        # albo „Esports” w kaflu. 09.10 `s=dortmund` dał 7 esportów przed Borussią.
-        if "/kursy/" not in href or "esport" in text or "%28" in href or "(" in href:
+        if not href_ok(href, text):
             continue
         score = team_coverage(text, home, away)
         if score > best_score:
             best, best_score = href, score
     return best
+
+def sts_tile_href(home, away):
+    # Esporty („B Dortmund (Bjela)”) też pasują po nazwach drużyn: nawias w adresie
+    # albo „Esports” w kaflu. 09.10 `s=dortmund` dał 7 esportów przed Borussią.
+    return best_event_href('a[href*="/kursy/"]', home, away,
+                           lambda h, t: "/kursy/" in h and "esport" not in t and "%28" not in h and "(" not in h)
 
 def sts_open_event():
     step("navigate")
@@ -693,29 +698,38 @@ def sb_logged_in():
     return js_bool("(() => { try { const u = JSON.parse(localStorage.getItem('user') || 'null'); if (u && u.value != null) return true; const e = JSON.parse(localStorage.getItem('users:sessionExpire') || 'null'); return !!(e && e.value && Number(e.value) > Date.now()); } catch (x) { return false; } })()")
 
 def sb_balance():
-    raw = js_str("(() => { const vis = e => e.getBoundingClientRect().width > 0; const els = [...document.querySelectorAll('header *, [class*=header] *, [class*=account] *, [class*=balance] *, [class*=wallet] *')].filter(e => vis(e) && e.children.length === 0 && /\\d+[.,]\\d{2}\\s*(zł|PLN)/i.test(e.innerText || '')); return els.length ? els[0].innerText : ''; })()")
+    # Nagłówek: „… Wpłata PN pawelbuk 139,99 PLN” — kwota i „PLN” to OSOBNE elementy,
+    # więc szukamy w tekście całego nagłówka, nie w pojedynczym liściu (09.10: null).
+    raw = js_str("(() => { const h = document.querySelector('header'); const m = h ? (h.innerText || '').match(/(\\d[\\d\\s\\u00a0]*[.,]\\d{2})\\s*(zł|PLN)/i) : null; return m ? m[1] : ''; })()")
     return parse_amount(raw)
+
+def sb_desktop_viewport():
+    # Okno agenta (941 px 19.09, 750 px 09.10) daje Superbetowi kupon mobilny: bez
+    # .sds-betslip-desktop i .e2e-betslip-submit (playbook Superbet, Krok 3).
+    try:
+        cdp("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=1, mobile=False)
+    except Exception:
+        pass
+    time.sleep(0.5)
 
 def sb_open_event():
     step("navigate")
-    if not open_page(SB_HOME + "/wyszukaj", "!!document.querySelector('input[name=\"search-events\"]')", 12):
-        return "search_input_missing"
     home, away = ORDER.get("homeTeam", ""), ORDER.get("awayTeam", "")
     href = ""
+    # Wyszukiwarka przez adres (/wyszukaj?query=<token>) — ten sam wynik co pole
+    # i Enter, bez zależności od pola. Tylko piłka nożna: koszykówka (Zastal – Legia)
+    # i inne sporty mają ten sam format adresu.
     for query in search_queries(home, away):
         try:
-            fill_input('input[name="search-events"]', query)
+            goto_url(SB_HOME + "/wyszukaj?query=" + query)
+            wait_for_load(20)
         except Exception:
-            return "search_fill_failed"
-        press_key("Enter")
+            pass
+        dismiss_overlays()
         deadline = time.time() + 12
         while time.time() < deadline and not href:
-            rows = js_val("[...document.querySelectorAll('a.e2e-event-row, a[href*=\"/kursy/\"]')].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 30)") or []
-            for r in rows:
-                text = norm(r.get("text", "") + " " + r.get("href", ""))
-                if "/kursy/" in r.get("href", "") and text_has_team(text, home) and text_has_team(text, away):
-                    href = r["href"]
-                    break
+            href = best_event_href('a.e2e-event-row, a[href*="/kursy/"]', home, away,
+                                   lambda h, t: "/kursy/pilka-nozna/" in h)
             if not href:
                 time.sleep(0.6)
         if href:
@@ -724,21 +738,47 @@ def sb_open_event():
         return "event_not_found"
     if not open_page(href if href.startswith("http") else SB_HOME + href, "document.querySelectorAll('.e2e-market').length > 0", 25):
         return "event_page_not_rendered"
-    title = norm(js_str("document.title"))
-    if not (text_has_team(title, home) and text_has_team(title, away)):
+    # Drużyny z h1 („Legia Warszawa vs Wisła Kraków: Kursy i Zakłady”) — document.title
+    # bywał samym „🐴 Superbet Polska” (19.09: fałszywe event_title_mismatch).
+    heading = norm(js_str("(document.querySelector('h1') || {}).innerText || document.title"))
+    if not team_coverage(heading, home, away):
         return "event_title_mismatch"
     dismiss_overlays()
     return None
 
+def sb_slip_legs():
+    """Nogi na kuponie desktop. Pusty kupon bywa w ogóle bez .sds-betslip-desktop — to 0."""
+    n = js_val("(() => { const s = document.querySelector('.sds-betslip-desktop'); if (s) return s.querySelectorAll('.betslip-selection-item').length; return document.querySelector('.e2e-betslip-empty-placeholder') || !document.querySelector('[class*=betslip]') ? 0 : -1; })()")
+    return int(n) if isinstance(n, (int, float)) else -1
+
 def sb_slip_has_legs():
-    return js_bool("(() => { const s = document.querySelector('.sds-betslip-selections'); const ph = document.querySelector('.e2e-betslip-empty-placeholder'); return !!(s && s.innerText.trim().length > 0) && !(ph && ph.getBoundingClientRect().width > 0); })()")
+    return sb_slip_legs() != 0
 
 def sb_clear_slip():
-    js_bool("(() => { const b = document.querySelector('.clear-button'); if (b) { b.click(); return true; } return false; })()")
-    time.sleep(0.8)
-    click_by_text("^(Usuń wszystk|Wyczyść|Tak, usuń)", "button")
-    time.sleep(0.6)
-    return not sb_slip_has_legs()
+    # Nogi z poprzednich biegów (także innych meczów): „Usuń” przy każdej nodze,
+    # w odwodzie „wyczyść kupon” (.clear-button) z potwierdzeniem.
+    for _ in range(15):
+        if sb_slip_legs() <= 0:
+            break
+        js_bool("(() => { const b = document.querySelector('.sds-betslip-desktop .grouped-selection-item__delete'); if (!b) return false; b.click(); return true; })()")
+        time.sleep(0.8)
+    if sb_slip_legs() != 0:
+        js_bool("(() => { const b = document.querySelector('.clear-button'); if (b) { b.click(); return true; } return false; })()")
+        time.sleep(0.8)
+        click_by_text("^(Usuń wszystk|Wyczyść|Tak, usuń)", "button")
+        time.sleep(0.6)
+    return sb_slip_legs() == 0
+
+def sb_slip_matches(odds):
+    """Jedna noga, obie drużyny i kurs klikniętego przycisku na kuponie."""
+    if sb_slip_legs() != 1:
+        return False
+    slip = sb_slip_text()
+    t = norm(slip)
+    if not (text_has_team(t, ORDER.get("homeTeam", "")) and text_has_team(t, ORDER.get("awayTeam", ""))):
+        return False
+    shown = sb_slip_odds()
+    return odds is None or shown is None or abs(shown - float(odds)) < 0.005
 
 def sb_group_tab(family):
     return {"1x2": None, "ou": "^Gole$", "corners": "^Rzuty rożne$", "btts": "^Gole$"}.get(family)
@@ -801,9 +841,14 @@ def sb_find_odd(group_re, market_re, odd_re, side=None):
         return res
     return {"missing": "odd", "names": []}
 
-def sb_click_pick():
+def sb_click_pick(odds):
     js_bool("(() => { const b = document.querySelector('[data-lv-pick=\"1\"]'); if (!b) return false; b.scrollIntoView({block: 'center'}); b.click(); return true; })()")
-    return wait_until("(() => { const s = document.querySelector('.sds-betslip-selections'); return !!(s && s.innerText.trim().length > 0 && document.querySelector('.e2e-betslip-submit')); })()", 8)
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if sb_slip_matches(odds):
+            return True
+        time.sleep(0.4)
+    return False
 
 def sb_set_stake(stake):
     try:
@@ -817,16 +862,32 @@ def sb_set_stake(stake):
     except ValueError:
         return False
 
-def sb_leg_count():
-    """Licznik nóg przy przycisku czyszczenia kuponu („1”); None = nie odczytano."""
-    v = js_str("(() => { const b = document.querySelector('.clear-button'); const t = b ? (b.innerText || '').trim() : ''; return /^\\d{1,2}$/.test(t) ? t : ''; })()")
-    return int(v) if v else None
-
 def sb_slip_text():
     return js_str("(() => { const s = document.querySelector('.sds-betslip-desktop, [class*=betslip-body]'); return s ? s.innerText.replace(/\\s+/g, ' ').slice(0, 600) : ''; })()")
 
 def sb_slip_odds():
     return parse_amount(js_str("(() => { const s = document.querySelector('.sds-betslip-desktop, [class*=betslip-body]'); if (!s) return ''; const m = s.innerText.match(/KURS\\s*(\\d+[.,]\\d+)/i); return m ? m[1] : ''; })()")) or None
+
+def sb_ticket_from_list(stake):
+    """Numer z „Moje zakłady” → Aktywne: [data-testid="ticket-list-item-<NNNN-XXXXXX>"]
+    (modal „ZAKŁAD POSTAWIONY” numeru nie ma — playbook Superbet, Krok 6). Bierzemy
+    pierwszy kupon z OBIEMA drużynami i naszą stawką; brak dopasowania = „-”."""
+    step("ticket")
+    try:
+        goto_url(SB_HOME + "/moje-zaklady/otwarte")
+        wait_for_load(20)
+    except Exception:
+        return None
+    if not wait_until("!!document.querySelector('[data-testid^=\"ticket-list-item-\"]')", 20, 1.0):
+        return None
+    items = js_val("[...document.querySelectorAll('[data-testid^=\"ticket-list-item-\"]')].map(e => ({id: e.getAttribute('data-testid').replace('ticket-list-item-', ''), text: (e.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 20)") or []
+    want = re.escape(stake_text(stake)).replace(",", "[.,]")
+    for it in items:
+        t = norm(it.get("text", ""))
+        if (re.fullmatch(r"[0-9A-Z]{4}-[0-9A-Z]{6}", it.get("id", "")) and re.search(want, it.get("text", ""))
+                and text_has_team(t, ORDER.get("homeTeam", "")) and text_has_team(t, ORDER.get("awayTeam", ""))):
+            return it["id"]
+    return None
 
 def sb_place():
     step("place")
@@ -836,13 +897,10 @@ def sb_place():
     deadline = time.time() + 15
     confirmed = False
     err = ""
-    ticket = None
     while time.time() < deadline:
         txt = body_text()
         if re.search(r"ZAKŁAD POSTAWIONY|zakład został postawiony|kupon przyjęty|zakład przyjęty", txt, re.I):
             confirmed = True
-            m = re.search(r"\b([0-9A-Z]{4}-[0-9A-Z]{5,8})\b", txt)
-            ticket = m.group(1) if m else None
             break
         err = error_texts()
         if err and classify_error(err):
@@ -855,11 +913,16 @@ def sb_place():
                 click_by_text("^(Anuluj|Odrzuć)")
                 return out("skipped", "odds_drift", "kurs %s → %s przy potwierdzeniu" % (ORDER.get("odds"), new_odds), balanceBefore=before)
         time.sleep(0.7)
-    after = sb_balance()
     stake = float(ORDER.get("stake") or 0)
+    after = sb_balance()
+    settle = time.time() + 8
+    while confirmed and time.time() < settle and before is not None and (after is None or before - after < stake * 0.5):
+        time.sleep(1.0)
+        after = sb_balance()
     dropped = before is not None and after is not None and (before - after) >= stake * 0.5
     if confirmed or dropped:
         click_by_text("^(OK|Zamknij|Gotowe)")
+        ticket = sb_ticket_from_list(stake)
         return out("placed", None, None, ticketId=ticket, balanceBefore=before, balanceAfter=after)
     if err:
         kind = classify_error(err) or ("failed", "ui_error")
@@ -870,18 +933,28 @@ def sb_prepare():
     family, dec, side = wanted_selection()
     if family == "other" or (family in ("ou", "corners") and dec is None) or side is None:
         return out("needs_model", "unsupported_market", "rynek %s/%s poza skryptem" % (ORDER.get("market"), ORDER.get("outcome")))
+    sb_desktop_viewport()
     nav = sb_open_event()
     if nav == "event_not_found":
         return out("needs_model", "event_not_found", "wyszukiwarka Superbet nie zwróciła meczu z obiema drużynami")
     if nav:
         return out("needs_model", "navigation_failed", nav)
+    sb_desktop_viewport()
     step("login")
     if not sb_logged_in() and os.environ.get("LV_PLACE_SKIP_LOGIN") != "1":
         return out("not_logged_in", "not_logged_in", "localStorage.user bez sesji")
     before = sb_balance()
     step("clear_slip")
-    if sb_slip_has_legs() and not sb_clear_slip():
-        return out("needs_model", "betslip_not_empty", "kupon ma nogi z poprzednich biegów i nie dał się wyczyścić")
+    # ZAWSZE do zera — nogi innych meczów nie są widoczne na stronie tego meczu.
+    if not sb_clear_slip():
+        return out("needs_model", "betslip_not_empty", "kupon ma %s nóg z poprzednich biegów i nie dał się wyczyścić" % sb_slip_legs(), balanceBefore=before)
+    res = sb_prepare_selection(family, dec, side, before)
+    # Zlecenie nie idzie dalej skryptem — nasza noga nie może zostać na kuponie (AKO).
+    if res.get("state") != "ready":
+        sb_clear_slip()
+    return res
+
+def sb_prepare_selection(family, dec, side, before):
     step("market")
     found = sb_find_odd(sb_group_tab(family), sb_market_name(family, dec), sb_odd_pattern(family, dec, side), side)
     if not isinstance(found, dict) or found.get("missing"):
@@ -895,8 +968,8 @@ def sb_prepare():
     if not odds_ok(displayed, ORDER.get("odds")):
         return out("skipped", "odds_drift", "kurs %s → %s" % (ORDER.get("odds"), displayed), balanceBefore=before)
     step("select")
-    if not sb_click_pick():
-        return out("needs_model", "selection_not_added", "klik w %s nie dodał nogi do kuponu" % found.get("label"), balanceBefore=before)
+    if not sb_click_pick(displayed):
+        return out("needs_model", "selection_not_added", "klik w %s: na kuponie %s nóg, kupon: %s" % (found.get("label"), sb_slip_legs(), sb_slip_text()[:200]), balanceBefore=before)
     step("stake")
     if not sb_set_stake(ORDER.get("stake")) and not sb_set_stake(ORDER.get("stake")):
         return out("needs_model", "stake_not_applied", "pole stawki nie przyjęło %s" % ORDER.get("stake"), balanceBefore=before)
@@ -905,21 +978,18 @@ def sb_prepare():
     slip_odds = sb_slip_odds()
     if slip_odds is not None and not odds_ok(slip_odds, ORDER.get("odds")):
         return out("skipped", "odds_drift", "kurs na kuponie %s → %s" % (ORDER.get("odds"), slip_odds), balanceBefore=before, slip=slip)
-    legs = sb_leg_count()
-    if legs is not None and legs != 1:
-        return out("needs_model", "betslip_multiple_legs", "nóg na kuponie: %s" % legs, balanceBefore=before, slip=slip)
+    if not sb_slip_matches(None):
+        return out("needs_model", "betslip_multiple_legs", "nóg na kuponie: %s" % sb_slip_legs(), balanceBefore=before, slip=slip)
     return out("ready", None, None, actualOdds=slip_odds or displayed, actualStake=float(ORDER.get("stake")), balanceBefore=before,
                slip=slip, label=found.get("label"))
 
 def sb_commit():
     step("recheck")
+    sb_desktop_viewport()
     if not sb_logged_in():
         return out("not_logged_in", "not_logged_in", "sesja wygasła przed kliknięciem")
-    if not sb_slip_has_legs():
-        return out("needs_model", "betslip_empty", "kupon pusty przed kliknięciem")
-    legs = sb_leg_count()
-    if legs is not None and legs != 1:
-        return out("needs_model", "betslip_multiple_legs", "nóg na kuponie: %s" % legs)
+    if not sb_slip_matches(None):
+        return out("needs_model", "betslip_multiple_legs", "przed kliknięciem nóg na kuponie: %s" % sb_slip_legs())
     val = js_str("(() => { const i = document.querySelector('input[name=\"stake\"]'); return i ? String(i.value) : ''; })()")
     try:
         if abs(float(val.replace(",", ".")) - float(ORDER.get("stake"))) >= 0.005:

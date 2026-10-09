@@ -73,8 +73,7 @@ Od 2026-09-19 `document.title` strony meczu to generyczne „🐴 Superbet Polsk
 w nagłówku `h1`: „Espanyol vs Elche: Kursy i Zakłady” — sprawdzaj OBIE drużyny
 tam (fuzzy, jak w `text_has_team`). To jest błąd, na którym `scripts/lv-place.py`
 oddał `needs_model` (`navigation_failed: event_title_mismatch`, a wcześniej
-`event_not_found`) — developer przenosi poprawkę (h1 zamiast `document.title`) do
-skryptu. Jedna karta na bieg; po czarnym ekranie: `location.reload()`, potem `new_tab`.
+`event_not_found`) — od 1.5.15 skrypt weryfikuje przez `h1`. Jedna karta na bieg; po czarnym ekranie: `location.reload()`, potem `new_tab`.
 
 **Viewport musi być desktopowy (≥ ~1200 px).** Gdy okno przeglądarki jest wąskie
 (zaobserwowane 941 px), Superbet serwuje layout responsywny/mobile: NIE ma
@@ -156,6 +155,22 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
   na bieżącym zleceniu.
 
 ## Log napraw
+
+- **2026-10-09 (skill 1.5.15) — poprawki z 19.09 PRZENIESIONE do `lv-place.py`.**
+  Skrypt teraz: wymusza 1440×900 (`Emulation.setDeviceMetricsOverride`), szuka przez
+  `/wyszukaj?query=<token>` i bierze tylko `/kursy/pilka-nozna/` (koszykówka
+  „Zastal – Legia” ma ten sam format adresu), wybiera wiersz z największym pokryciem
+  nazw obu drużyn i odrzuca II/U19/kobiety („Legia Ladies (K)”), gdy zlecenie ich nie
+  dotyczy, weryfikuje mecz przez `h1`, liczy nogi w
+  `.sds-betslip-desktop .betslip-selection-item` (pusty kupon bywa bez panelu = 0),
+  czyści kupon do zera przed każdym zleceniem i po każdym, które nie doszło do
+  `ready` (`.grouped-selection-item__delete` „Usuń”, odwód `.clear-button`), sprawdza
+  nogę po drużynach i kursie na kuponie, czyta saldo z tekstu nagłówka („139,99” i
+  „PLN” to osobne elementy) i bierze numer kuponu z `/moje-zaklady/otwarte`
+  (`ticket-list-item-<NNNN-XXXXXX>`, dopasowanie po drużynach i „STAWKA x,xx PLN”).
+  Zakończone kupony są pod `/moje-zaklady/zakonczony` (zakładka „Rozliczone”).
+  Sprawdzone na żywo bez stawiania: 1x2, ou25, btts, odds_drift, kupon z cudzą nogą,
+  odczyt numeru (trafny / zła stawka / obce drużyny), prepare na zalogowanym koncie.
 
 - 2026-09-19 — **drift: `document.title` meczu bez drużyn.** Strona meczu zwraca
   `document.title` = „🐴 Superbet Polska”; `h1` = „Korona Kielce vs Raków
