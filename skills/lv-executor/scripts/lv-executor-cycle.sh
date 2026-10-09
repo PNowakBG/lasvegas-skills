@@ -293,6 +293,18 @@ login_bookmaker() {
   detail=$(json_field "$LOGIN_RESULT" detail)
   balance=$(json_field "$LOGIN_RESULT" balance)
   log "logowanie $slug: ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}"
+  # Awaria przeglądarki to nie sprawa dla człowieka: restart Chrome agenta i druga
+  # próba w tym samym cyklu. 05–09.10 zawieszony Chrome (CDP odpowiadał, nawigacja
+  # nie) dawał „Page.navigate timed out” i 6 h blokady — jedna próba na 6 h,
+  # zawsze na tej samej martwej przeglądarce, przez cztery dni.
+  if [ "$state" != "logged_in" ] && [ "$mode" != "--check-only" ] && [ "${LOGIN_RETRY:-}" != "1" ] \
+    && browser_failure "$reason" "$detail"; then
+    log "logowanie $slug: przeglądarka agenta nie odpowiada — restartuję Chrome i próbuję ponownie"
+    if restart_chrome; then
+      LOGIN_RETRY=1 login_bookmaker "$slug" "$mode"
+      return $?
+    fi
+  fi
   if [ "$state" = "logged_in" ]; then
     lv_api 15 session "$slug" logged_in ${balance:+"$balance"} > /dev/null 2>&1 \
       || log "OSTRZEŻENIE: nie zgłoszono logged_in $slug do LasVegas"
@@ -303,6 +315,13 @@ login_bookmaker() {
   [ -n "$detail" ] || detail="lv-login.py nie zwrócił wyniku"
   lv_api 15 session "$slug" logged_out "" "$reason" "$detail" > /dev/null 2>&1 \
     || log "OSTRZEŻENIE: nie zgłoszono logged_out $slug do LasVegas"
+  # Przeglądarka nie odpowiada także po restarcie: krótka blokada (LOGIN_BLOCK_TTL_BROWSER)
+  # zamiast 6 h — człowiek nic tu nie poprawi, a za pół godziny może już działać.
+  if [ "$mode" != "--check-only" ] && browser_failure "$reason" "$detail"; then
+    notify "LasVegas agent" "$slug: przeglądarka agenta nie odpowiada także po restarcie ($detail) — kolejna próba za $((LOGIN_BLOCK_TTL_BROWSER / 60)) min."
+    printf 'browser_error %s\n' "$(date +%s)" > "$(login_block_file "$slug")" 2>/dev/null || true
+    return 1
+  fi
   case "$reason" in
     captcha) notify "LasVegas agent" "$slug: bukmacher pokazał captchę — zaloguj się w oknie agenta (lv-executor-cycle.sh login $slug)." ;;
     two_factor) notify "LasVegas agent" "$slug: potrzebny kod SMS/2FA${detail:+ ($detail)} — zaloguj się RAZ w oknie agenta: lv-executor-cycle.sh login $slug. Kolejne próby wstrzymane, żeby nie wysyłać Ci SMS-a co 5 minut." ;;
@@ -324,16 +343,20 @@ login_bookmaker() {
 # poprawka poświadczeń (`credentials`, plik nowszy niż blokada), ręczne
 # `login <buk>`, albo 6 godzin. 18.09: bez tego cykl próbował logować do
 # Superbetu co 5 minut, a każda próba = SMS z kodem do użytkownika i alert.
+# Awaria przeglądarki (browser_error) blokuje tylko na 30 min — patrz login_bookmaker.
 LOGIN_BLOCK_TTL=$((6 * 3600))
+LOGIN_BLOCK_TTL_BROWSER=$((30 * 60))
 login_block_file() { printf '%s/lv-login-block-%s' "$HERMES_HOME" "$1"; }
 login_blocked() {
-  local f reason stamp now
+  local f reason stamp now ttl
   f=$(login_block_file "$1")
   [ -f "$f" ] || return 1
   read -r reason stamp < "$f" 2>/dev/null || return 1
   case "$stamp" in ''|*[!0-9]*) rm -f "$f"; return 1 ;; esac
   now=$(date +%s)
-  if [ $((now - stamp)) -ge "$LOGIN_BLOCK_TTL" ]; then rm -f "$f"; return 1; fi
+  ttl="$LOGIN_BLOCK_TTL"
+  [ "$reason" = "browser_error" ] && ttl="$LOGIN_BLOCK_TTL_BROWSER"
+  if [ $((now - stamp)) -ge "$ttl" ]; then rm -f "$f"; return 1; fi
   if [ -f "$CREDENTIALS_FILE" ] && [ "$(dir_mtime "$CREDENTIALS_FILE")" -gt "$stamp" ]; then rm -f "$f"; return 1; fi
   LOGIN_BLOCK_REASON="$reason"
   LOGIN_BLOCK_AGE_MIN=$(( (now - stamp) / 60 ))
@@ -347,14 +370,20 @@ queue_bookmakers() {
     | sed 's/.*"\([a-z0-9-]*\)"$/\1/' | sort -u | grep -E '^(sts|superbet)$' || true
 }
 
+# Buki zalogowane w TYM cyklu (lista slugów) — tylko je wylogowuje szybka ścieżka.
+CYCLE_LOGINS=""
 ensure_logins() {
   local slug
   for slug in $(queue_bookmakers "$1"); do
     if login_blocked "$slug"; then
-      log "pomijam logowanie $slug: $LOGIN_BLOCK_REASON ($LOGIN_BLOCK_AGE_MIN min temu) — czekam na człowieka (credentials $slug / login $slug) albo 6 h"
+      if [ "$LOGIN_BLOCK_REASON" = "browser_error" ]; then
+        log "pomijam logowanie $slug: przeglądarka nie odpowiadała $LOGIN_BLOCK_AGE_MIN min temu — ponowna próba po $((LOGIN_BLOCK_TTL_BROWSER / 60)) min"
+      else
+        log "pomijam logowanie $slug: $LOGIN_BLOCK_REASON ($LOGIN_BLOCK_AGE_MIN min temu) — czekam na człowieka (credentials $slug / login $slug) albo 6 h"
+      fi
       continue
     fi
-    login_bookmaker "$slug" || true
+    login_bookmaker "$slug" && CYCLE_LOGINS="${CYCLE_LOGINS:+$CYCLE_LOGINS }$slug"
   done
 }
 
@@ -393,10 +422,14 @@ policy_logout_after_work() {
   return 0
 }
 
+# $1 = slugi oddzielone spacją. Pusta lista = nic do roboty: do 1.5.10 cykl
+# wylogowywał każdego buka z kolejki, także gdy logowanie było zablokowane — przy
+# 6 h blokadzie STS otwierał sts.pl co 5 minut tylko po to, żeby się wylogować.
 logout_bookmakers() {
   local slug
+  [ -n "$1" ] || return 0
   SESSION_POLICY=$(lv_api 10 session-policy 2>/dev/null) || SESSION_POLICY=""
-  for slug in $(queue_bookmakers "$1"); do
+  for slug in $1; do
     if policy_logout_after_work "$slug"; then
       logout_bookmaker "$slug" || true
     else
@@ -575,6 +608,35 @@ ensure_chrome() {
   done
   log "BŁĄD: CDP :9222 nie odpowiada po 60 s"
   return 1
+}
+
+# Wynik lv-login.py, za którym stoi przeglądarka albo harness, nie strona buka:
+# wyjątek CDP w harnessie (Page.navigate/Runtime.evaluate timed out), brak wyniku,
+# timeout albo brak CLI browser-use. $1 = reason, $2 = detail.
+browser_failure() {
+  [ "$1" = "login_error" ] || return 1
+  case "$2" in
+    *"wyjątek harnessu"*|*"harness nie zwrócił wyniku"*|*"browser-use nie odpowiedział"*|*"nie udało się uruchomić browser-use"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Twardy restart przeglądarki agenta. cdp_alive tego nie wykryje: zawieszony
+# Chrome dalej odpowiada na /json/version, a każda nawigacja kończy się timeoutem.
+# Wzorzec łapie wyłącznie Chrome z profilem agenta — zwykła przeglądarka zostaje.
+restart_chrome() {
+  pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+  for _ in $(seq 1 15); do
+    pgrep -f "user-data-dir=$PROFILE_DIR" > /dev/null 2>&1 || break
+    sleep 1
+  done
+  pkill -9 -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
+  # Demon browser-use trzyma połączenie ze starą przeglądarką. Bez żywej sesji
+  # Hermesa nikt go nie używa (ten sam warunek co sprzątanie sierot niżej).
+  if ! pgrep -f "hermes chat" > /dev/null 2>&1; then
+    pkill -f "browser_harness.daemon" 2>/dev/null || true
+  fi
+  ensure_chrome
 }
 
 # Ten skrypt jest wpisem usługi i JEDYNYM miejscem w skillu, które sięga po
@@ -930,7 +992,7 @@ ensure_logins "$QUEUE"
 # Kolejka sprzed logowania ma `loginBlocked: true` (ostatni meldunek = wylogowanie
 # po poprzednim cyklu) — po świeżym `logged_in` pobieramy ją od nowa. 19.09: bez
 # tego skrypt odrzucał po cichu wszystkie zlecenia i cykl tylko logował/wylogowywał.
-# $QUEUE zostaje do wylogowania (lista buków, do których cykl się logował).
+# $QUEUE zostaje do wylogowania po sesji modelu (model też umie się zalogować).
 WORK_QUEUE=$(queue_json) || { log "OSTRZEŻENIE: nie odświeżono kolejki po logowaniu — pracuję na starej"; WORK_QUEUE="$QUEUE"; }
 
 # Znacznik początku cyklu — od niego liczy się podsumowanie na Telegram
@@ -943,7 +1005,7 @@ fast_path "$WORK_QUEUE"
 VERIFICATIONS=$(lv_api 15 verifications 2>/dev/null || echo "[]")
 if [ "$FAST_REMAINING" -eq 0 ] && [ "$(printf '%s' "$VERIFICATIONS" | tr -d '[:space:]')" = "[]" ]; then
   log "skrypt: spróbowano $FAST_TRIED zleceń, czeka (logowanie/zgoda) $FAST_WAITING — sesja modelu niepotrzebna"
-  logout_bookmakers "$QUEUE"
+  logout_bookmakers "$CYCLE_LOGINS"
   send_cycle_digest "$CYCLE_START"
   exit 0
 fi
@@ -970,7 +1032,7 @@ LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
 rc=${PIPESTATUS[0]}
 
 # Sesje u buków zamykamy zaraz po pracy — niezależnie od tego, jak skończył agent.
-logout_bookmakers "$QUEUE"
+logout_bookmakers "$(queue_bookmakers "$QUEUE")"
 
 # Podsumowanie cyklu na Telegram: postawione, pominięte, nieudane — z serwera.
 send_cycle_digest "$CYCLE_START"
