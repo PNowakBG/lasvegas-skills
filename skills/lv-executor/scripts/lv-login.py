@@ -260,10 +260,18 @@ def captcha_visible():
     # hCaptcha/reCAPTCHA renderuje wyzwanie w iframe; niewidzialna wersja NIE ma
     # widocznej ramki — liczy się tylko ramka wyzwania (frame=challenge) na ekranie.
     return js_bool(
-        "[...document.querySelectorAll('iframe')].some(f => /hcaptcha|recaptcha|turnstile/i.test(f.src || '')"
+        "[...document.querySelectorAll('iframe')].some(f => /hcaptcha|recaptcha|turnstile|challenges\\.cloudflare/i.test(f.src || '')"
         " && /challenge|bframe/i.test(f.src || '') && f.getBoundingClientRect().width > 50"
         " && getComputedStyle(f).visibility !== 'hidden')"
     )
+
+# Cloudflare Turnstile w formularzu logowania STS (widziany 09.10): niewidzialny widget
+# z ukrytym polem cf-turnstile-response. Puste pole = Cloudflare jeszcze (albo
+# wcale) nie przepuścił przeglądarki — logowanie bez tokenu kończy się ciszą.
+TURNSTILE_PENDING = "(() => { const i = document.querySelector('input[name=\"cf-turnstile-response\"]'); return !!i && !i.value; })()"
+
+def turnstile_pending():
+    return js_bool(TURNSTILE_PENDING)
 
 def two_factor_visible():
     # Mocny sygnał: widoczne pole na kod (one-time-code / name z code|otp|sms).
@@ -331,6 +339,8 @@ def sts_login():
     fill_input('[data-testid="input-username"]', USER)
     fill_input('[data-testid="input-password"]', PASS)
     time.sleep(0.5)
+    # Klik przed wydaniem tokenu Turnstile = formularz bez dowodu „nie-bota”.
+    wait_until("!" + TURNSTILE_PENDING, 15)
     # Przycisk „Zaloguj się" WEWNĄTRZ formularza (nie ten w nagłówku).
     submitted = js_bool(
         "(() => { const f = document.querySelector('[data-testid=\"input-password\"]')?.closest('form');"
@@ -352,6 +362,8 @@ def sts_login():
             return out("logged_out", "bad_credentials", err)
         time.sleep(1.0)
     err = error_text()
+    if turnstile_pending():
+        return out("logged_out", "captcha", "Cloudflare Turnstile nie wydał tokenu — STS nie przepuścił logowania (%s)" % (err or "brak komunikatu"))
     return out("logged_out", "login_error", err or "po 40 s brak salda i brak komunikatu")
 
 def sts_logout():
