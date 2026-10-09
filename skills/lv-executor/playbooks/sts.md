@@ -306,9 +306,24 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
 
 ## Log napraw
 
+- **2026-10-09 (skill 1.5.14) — poprawki z biegów 24.09–09.10 PRZENIESIONE do `lv-place.py`.**
+  Przyczyna `selection_not_added`: okno agenta ma naturalnie 750 px (Wayland ignoruje
+  `--window-size`), STS < 768 px pokazuje kupon mobilny, a zalogowany użytkownik nie ma
+  wtedy `Postaw` w treści strony. Skrypt teraz: wymusza 1400×900
+  (`Emulation.setDeviceMetricsOverride`), liczy nogi w `bs-betslip-desktop bs-betslip-event`,
+  czyści kupon do zera PRZED każdym zleceniem i PO każdym, które nie doszło do `ready`
+  (X = `.icon-close` w `bs-betslip-event`), weryfikuje nogę po tekście kuponu (obie drużyny
+  + linia), szuka przez `/szukaj?s=<token>`, odrzuca esporty (nawias w adresie) i kafle
+  U19/U21/II/kobiet, gdy zlecenie ich nie dotyczy (09.10: `warszawa`+`krakow` trafiło
+  w Escola Varsovia U19 – Wisła U19 zamiast Legia – Wisła), czeka do 12 s na blok rynku
+  zamiast progu `> 3` rynków, nie uznaje „Kurs całkowity” za potwierdzenie, a numer kuponu
+  bierze z modala „Kupon w grze” (`sds-overlay-container`, URL `szczegoly/<18 cyfr>`;
+  w numerze są znaki `\u200d`) po sprawdzeniu stawki i drużyn W MODALU.
+  Sprawdzone na żywo bez stawiania: ou2/ou25/1x2/drift, kupon zaśmiecony innym meczem.
+
 - **2026-10-09 (bieg manualny, 9 zleceń zaległych + 1 nowe, wszystkie STS, 10/10 POSTAWIONE).**
   `lv-place.py` oddał 7x `selection_not_added` i 2x `event_not_found`. Diagnoza i poprawki
-  (do przeniesienia do skryptu):
+  (przeniesione do skryptu w 1.5.14 — wpis wyżej):
   1. **`selection_not_added` to FAŁSZYWY alarm skryptu — klik DZIAŁA.** Na starcie kupon
      `bs-betslip-desktop` miał 4 nogi z poprzedniego biegu (Dortmund -2 5.40, Raków -3 2.00,
      Podbeskidzie -2 2.85, Wieczysta -1 10.50) — dokładnie te, które skrypt zgłosił jako

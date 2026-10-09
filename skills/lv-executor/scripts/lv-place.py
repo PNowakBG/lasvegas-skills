@@ -146,6 +146,26 @@ def text_has_team(text, team):
     toks = sorted(key_tokens(team), key=len, reverse=True)
     return bool(toks) and toks[0] in text
 
+# Drużyny młodzieżowe, rezerwy, kobiety: kafel z takim znacznikiem pasuje po nazwach
+# do meczu seniorów (09.10: „warszawa” + „krakow” → Escola Varsovia Warszawa U19 –
+# Wisła Kraków U19 zamiast Legia – Wisła). Znacznik musi być też w zleceniu.
+SQUAD_MARKERS = {"u16", "u17", "u18", "u19", "u20", "u21", "u22", "u23", "ii", "iii", "kobiety", "women", "rezerwy"}
+
+def squad_markers(text):
+    toks = set(re.split(r"[^a-z0-9]+", norm(text)))
+    found = toks & SQUAD_MARKERS
+    if "[k]" in norm(text) or "(k)" in norm(text):
+        found.add("kobiety")
+    return found
+
+def team_coverage(text, home, away):
+    """Ile słów kluczowych OBU drużyn jest w tekście; 0 = brak najdłuższego słowa którejś drużyny."""
+    if not (text_has_team(text, home) and text_has_team(text, away)):
+        return 0
+    if squad_markers(text) - squad_markers(home + " " + away):
+        return 0
+    return sum(1 for t in key_tokens(home) + key_tokens(away) if t in text)
+
 def search_queries(home, away):
     """Najdłuższy nie-generyczny token gospodarza, potem gościa — wyszukiwarki buków
     nie lubią pełnych nazw („RCD Espanyol” zwraca pustkę, „espanyol” działa)."""
@@ -306,54 +326,91 @@ def sts_balance():
     raw = js_str("(() => { const m = (document.body ? document.body.innerText : '').match(/Depozyt\\s*([\\d\\s\\u00a0]*\\d,\\d{2})/); return m ? m[1] : ''; })()")
     return parse_amount(raw)
 
+# Strona meczu gotowa = jest choć jeden blok rynku. NIE próg „> 3”: mecze dalekie
+# (Puchar Polski) mają tylko 2–3 rynki i dawały fałszywe event_page_not_rendered (24.09).
+STS_EVENT_READY = "document.querySelectorAll('bo-match-detail-market-wrapper').length > 0"
+
+def sts_desktop_viewport():
+    # Okno agenta wstaje węższe niż --window-size (09.10 na Waylandzie: 750 px), a STS
+    # poniżej ~768 px przełącza się na kupon mobilny: bez prawej kolumny, bez `Postaw`
+    # w treści strony. Klik w kurs dodawał nogę, a skrypt jej nie widział
+    # (selection_not_added) i nogi zostawały na kuponie — groźba AKO.
+    try:
+        cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+    except Exception:
+        pass
+    time.sleep(0.5)
+
+def sts_tile_href(home, away):
+    tiles = js_val("[...document.querySelectorAll('a[href*=\"/kursy/\"]')].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 40)") or []
+    best, best_score = "", 0
+    for t in tiles:
+        href = t.get("href", "")
+        text = norm(t.get("text", "") + " " + href.replace("-", " "))
+        # Esporty („B Dortmund (Bjela)”) też pasują po nazwach drużyn: nawias w adresie
+        # albo „Esports” w kaflu. 09.10 `s=dortmund` dał 7 esportów przed Borussią.
+        if "/kursy/" not in href or "esport" in text or "%28" in href or "(" in href:
+            continue
+        score = team_coverage(text, home, away)
+        if score > best_score:
+            best, best_score = href, score
+    return best
+
 def sts_open_event():
     step("navigate")
-    if not open_page(STS_HOME + "/szukaj", "!!document.querySelector('#Search, input[type=search]')", 12):
-        return "search_input_missing"
     home, away = ORDER.get("homeTeam", ""), ORDER.get("awayTeam", "")
     href = ""
+    # Wyszukiwarka przez adres (/szukaj?s=<token>) — deterministyczna, bez pola i Enter
+    # (playbook STS „Wyszukiwarka”, 6/6 meczów 24.09 i 10/10 09.10).
     for query in search_queries(home, away):
         try:
-            fill_input("#Search, input[type=search]", query)
+            goto_url(STS_HOME + "/szukaj?s=" + query)
+            wait_for_load(20)
         except Exception:
-            return "search_fill_failed"
-        press_key("Enter")
+            pass
+        dismiss_overlays()
         deadline = time.time() + 12
         while time.time() < deadline and not href:
-            tiles = js_val("[...document.querySelectorAll('a.one-ticket-match-tile-link, a[href*=\"/kursy/\"]')].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 30)") or []
-            for t in tiles:
-                text = norm(t.get("text", "") + " " + t.get("href", ""))
-                if "/kursy/" in t.get("href", "") and text_has_team(text, home) and text_has_team(text, away) and "[k]" not in text:
-                    href = t["href"]
-                    break
+            href = sts_tile_href(home, away)
             if not href:
                 time.sleep(0.6)
         if href:
             break
     if not href:
         return "event_not_found"
-    if not open_page(href if href.startswith("http") else STS_HOME + href, "document.querySelectorAll('bo-match-detail-market-wrapper').length > 3", 25):
+    if not open_page(href if href.startswith("http") else STS_HOME + href, STS_EVENT_READY, 25):
         return "event_page_not_rendered"
+    time.sleep(1.5)
     title = norm(js_str("document.title"))
-    if not (text_has_team(title, home) and text_has_team(title, away)):
+    if not team_coverage(title, home, away):
         return "event_title_mismatch"
     dismiss_overlays()
     return None
 
-def sts_slip_has_legs():
-    return js_bool("/Postaw\\s+[\\d\\s]*\\d,\\d{2}\\s*z/.test(document.body.innerText) || document.querySelectorAll('.odds-button__container--selected').length > 0")
+def sts_slip_legs():
+    """Nogi na kuponie (bs-betslip-desktop). -1 = brak kuponu desktop (układ mobilny)."""
+    n = js_val("(() => { const s = document.querySelector('bs-betslip-desktop'); return s ? s.querySelectorAll('bs-betslip-event').length : -1; })()")
+    return int(n) if isinstance(n, (int, float)) else -1
+
+def sts_slip_text():
+    return js_str("(() => { const s = document.querySelector('bs-betslip-desktop'); return s ? s.innerText.replace(/\\s+/g, ' ').slice(0, 600) : ''; })()")
 
 def sts_clear_slip():
-    # Nogi z poprzednich biegów: X przy nodze to bezimienny przycisk w prawej kolumnie;
-    # gdy to nie pomaga — szkic kuponu w localStorage + reload (playbook STS, krok 4.0).
-    js_bool("(() => { const xs = [...document.querySelectorAll('button.only-icon.sds-button.tertiary.small')].filter(b => b.getBoundingClientRect().left > innerWidth * 0.55 && !/expand/.test(String(b.className) + (b.querySelector('i') ? b.querySelector('i').className : ''))); xs.forEach(b => b.click()); return xs.length; })()")
-    time.sleep(0.8)
-    if sts_slip_has_legs():
+    # Nogi z poprzednich biegów (także z INNYCH meczów — nie widać ich jako zaznaczonych
+    # kursów na tej stronie): X przy nodze to `.icon-close` w bs-betslip-event. Gdy to
+    # nie pomaga — szkic kuponu w localStorage + reload (playbook STS, krok 4.0).
+    for _ in range(15):
+        if sts_slip_legs() <= 0:
+            break
+        js_bool("(() => { const x = document.querySelector('bs-betslip-desktop bs-betslip-event button.only-icon .icon-close'); if (!x) return false; x.closest('button').click(); return true; })()")
+        time.sleep(0.8)
+    if sts_slip_legs() != 0:
         js_bool("(() => { try { localStorage.removeItem('betslip-cache'); } catch (e) {} location.reload(); return true; })()")
         wait_for_load(25)
-        wait_until("document.querySelectorAll('bo-match-detail-market-wrapper').length > 3", 25)
+        wait_until(STS_EVENT_READY, 25)
+        sts_desktop_viewport()
         dismiss_overlays()
-    return not sts_slip_has_legs()
+    return sts_slip_legs() == 0
 
 def sts_market_header(family, dec):
     if family == "1x2":
@@ -392,35 +449,56 @@ def sts_find_button(header_re, label_re):
       w.setAttribute('data-lv-target', '1'); btns[idx].setAttribute('data-lv-pick', '1');
       return {label: labels[idx], odds: m ? parseFloat(m[1].replace(',', '.')) : null};
     })()""" % (json.dumps(header_re), json.dumps(label_re))
-    for _ in range(3):
+    # Strona meczu doładowuje bloki rynków po kilka sekund (09.10: „Mecz, Podwójna szansa”
+    # tuż po wejściu) — brak bloku to porażka dopiero po 12 s.
+    deadline = time.time() + 12
+    expanded = 0
+    while True:
         res = js_val(finder)
-        if isinstance(res, dict) and res.get("expanded"):
+        if isinstance(res, dict) and res.get("expanded") and expanded < 3:
+            expanded += 1
             time.sleep(1.2)
             continue
-        return res
-    return {"missing": "button", "labels": []}
+        if isinstance(res, dict) and res.get("missing") == "wrapper" and time.time() < deadline:
+            time.sleep(1.0)
+            continue
+        return res if not (isinstance(res, dict) and res.get("expanded")) else {"missing": "button", "labels": []}
 
-def sts_click_pick():
+def sts_slip_matches(label):
+    """Jedna noga na kuponie i jest NASZA: obie drużyny + linia/wynik z etykiety przycisku."""
+    if sts_slip_legs() != 1:
+        return False
+    slip = norm(sts_slip_text())
+    pick = re.sub(r"\s+", " ", norm(re.sub(r"\s*\d+[.,]\d+\s*$", "", label or "")))
+    return (text_has_team(slip, ORDER.get("homeTeam", "")) and text_has_team(slip, ORDER.get("awayTeam", ""))
+            and (not pick or pick in slip))
+
+def sts_click_pick(label):
     js_bool("(() => { const b = document.querySelector('[data-lv-pick=\"1\"]'); if (!b) return false; b.scrollIntoView({block: 'center'}); b.click(); return true; })()")
-    return wait_until("!!document.querySelector('[data-lv-pick=\"1\"].odds-button__container--selected') && /Postaw|Zaloguj się/.test(document.body.innerText)", 8)
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        if sts_slip_matches(label):
+            return True
+        time.sleep(0.4)
+    return False
+
+STS_STAKE_INPUT = "bs-betslip-desktop input[inputmode=\"decimal\"], #Stawka"
 
 def sts_set_stake(stake):
-    js_bool("""(() => { const inp = document.querySelector('#Stawka, input[inputmode="decimal"]'); if (!inp) return false;
+    js_bool("""(() => { const inp = document.querySelector('%s'); if (!inp) return false;
       const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      setter.call(inp, ''); inp.dispatchEvent(new Event('input', {bubbles: true})); inp.focus(); return true; })()""")
+      setter.call(inp, ''); inp.dispatchEvent(new Event('input', {bubbles: true})); inp.focus(); return true; })()""" % STS_STAKE_INPUT)
     type_text(stake_text(stake) if float(stake) != int(float(stake)) else str(int(float(stake))))
-    js_bool("""(() => { const inp = document.querySelector('#Stawka, input[inputmode="decimal"]'); if (!inp) return false;
-      inp.dispatchEvent(new Event('change', {bubbles: true})); inp.blur(); return true; })()""")
+    js_bool("""(() => { const inp = document.querySelector('%s'); if (!inp) return false;
+      inp.dispatchEvent(new Event('change', {bubbles: true})); inp.blur(); return true; })()""" % STS_STAKE_INPUT)
     want = re.escape(stake_text(stake))
     # Etykieta „Postaw …” odświeża się z opóźnieniem (~1 s) — czytaj ponownie, nie ufaj pierwszemu odczytowi.
     if wait_until("/Postaw\\s+%s\\s*z/.test(document.body.innerText)" % want, 6):
         return True
     if os.environ.get("LV_PLACE_SKIP_LOGIN") == "1":
-        return js_bool("(() => { const i = document.querySelector('#Stawka, input[inputmode=\"decimal\"]'); return !!i && i.value.replace('.', ',') === %s; })()" % json.dumps(stake_text(stake)))
+        # Gość (test na sucho): zamiast „Postaw” jest „Zaloguj się”, kwotę pokazuje podsumowanie kuponu.
+        return bool(re.search(r"Stawka\s+%s\s*z" % want, sts_slip_text()))
     return False
-
-def sts_slip_text():
-    return js_str("(() => { const els = [...document.querySelectorAll('div,section,aside')].filter(e => e.getBoundingClientRect().width > 0 && e.getBoundingClientRect().left > innerWidth * 0.55 && /Postaw/.test(e.innerText) && e.innerText.length < 1500); els.sort((a, b) => a.innerText.length - b.innerText.length); return els.length ? els[0].innerText.replace(/\\s+/g, ' ').slice(0, 600) : ''; })()")
 
 def sts_ticket_from_network():
     try:
@@ -441,9 +519,40 @@ def sts_ticket_from_network():
             body = cdp("Network.getResponseBody", requestId=rid).get("body", "")
         except Exception:
             continue
-        m = re.search(r"\b(\d{12,20})\b", str(body))
+        # Numer kuponu STS ma 18 cyfr (np. 568 226 110 024 038 850); krótsze liczby
+        # w odpowiedzi to znaczniki czasu (13 cyfr) i identyfikatory zdarzeń.
+        m = re.search(r"(?<!\d)(\d{18})(?!\d)", str(body))
         if m:
             return m.group(1)
+    return None
+
+def sts_ticket_from_modal(stake):
+    """Numer z modala „Kupon w grze” najnowszego kuponu (10/10 kuponów 09.10). Kupon
+    musi mieć NASZĄ stawkę i oba zespoły — inaczej to sąsiedni kupon i lepiej „-”."""
+    step("ticket")
+    try:
+        goto_url(STS_HOME + "/moje-zaklady/w-grze")
+        wait_for_load(20)
+    except Exception:
+        return None
+    # Lista renderuje się leniwie.
+    if not wait_until("!!document.querySelector('.my-bets-ticket-header-actions')", 20, 1.0):
+        return None
+    js_bool("(() => { const a = document.querySelector('.my-bets-ticket-header-actions'); const b = a.querySelector('button, a, [role=button]') || a; b.click(); return true; })()")
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        # Tylko treść modala — lista kuponów pod nim ma stawki i drużyny SĄSIEDNICH kuponów.
+        txt = js_str("(() => { const b = document.querySelector('.modal-content__body'); const m = b && (b.closest('sds-overlay-container') || b.parentElement); return m ? m.innerText : ''; })()")
+        m = re.search(r"szczegoly/(\d{18})", js_str("location.href"))
+        mm = re.search(r"Numer kuponu\s*([\d\s\u200b\u200d\u00a0]{18,40})", txt)
+        num = m.group(1) if m else (re.sub(r"\D", "", mm.group(1)) if mm else "")
+        if num and txt:
+            t = norm(txt)
+            if (re.search(r"Stawka\s+%s\s*z" % re.escape(stake_text(stake)), txt)
+                    and text_has_team(t, ORDER.get("homeTeam", "")) and text_has_team(t, ORDER.get("awayTeam", ""))):
+                return num
+            return None
+        time.sleep(1.0)
     return None
 
 def sts_place():
@@ -461,7 +570,9 @@ def sts_place():
     err = ""
     while time.time() < deadline:
         txt = body_text()
-        if re.search(r"Przyjęliśmy Twój kupon|Kupon przyjęty|zakład przyjęty|Kurs całkowity", txt, re.I):
+        # NIE „Kurs całkowity” — ten napis stoi na kuponie zawsze, także przed kliknięciem
+        # (playbook STS: kryterium = „Przyjęliśmy Twój kupon!” ORAZ spadek salda).
+        if re.search(r"Przyjęliśmy Twój kupon|Kupon przyjęty|zakład przyjęty", txt, re.I):
             confirmed = True
             break
         err = error_texts()
@@ -476,15 +587,19 @@ def sts_place():
                 click_by_text("^(Anuluj|Odrzuć)")
                 return out("skipped", "odds_drift", "kurs %s → %s przy potwierdzeniu" % (ORDER.get("odds"), new_odds), balanceBefore=before)
         time.sleep(0.7)
-    after = sts_balance()
     stake = float(ORDER.get("stake") or 0)
+    # Saldo w nagłówku odświeża się z opóźnieniem 5–6 s (playbook STS, krok 6.3).
+    after = sts_balance()
+    settle = time.time() + 8
+    while confirmed and time.time() < settle and before is not None and (after is None or before - after < stake * 0.5):
+        time.sleep(1.0)
+        after = sts_balance()
     dropped = before is not None and after is not None and (before - after) >= stake * 0.5
     ticket = sts_ticket_from_network() if (confirmed or dropped) else None
-    if not ticket and (confirmed or dropped):
-        m = re.search(r"\b(\d{12,20})\b", body_text())
-        ticket = m.group(1) if m else None
     if confirmed or dropped:
         js_bool("(() => { const x = [...document.querySelectorAll('button.only-icon')].find(b => b.closest('[class*=modal], [class*=dialog]')); if (x) x.click(); return true; })()")
+        if not ticket:
+            ticket = sts_ticket_from_modal(stake)
         return out("placed", None, None, ticketId=ticket, balanceBefore=before, balanceAfter=after)
     if err:
         kind = classify_error(err) or ("failed", "ui_error")
@@ -495,18 +610,32 @@ def sts_prepare():
     family, dec, side = wanted_selection()
     if family == "other" or (family in ("ou", "corners") and dec is None) or side is None:
         return out("needs_model", "unsupported_market", "rynek %s/%s poza skryptem" % (ORDER.get("market"), ORDER.get("outcome")))
+    sts_desktop_viewport()
     nav = sts_open_event()
     if nav == "event_not_found":
         return out("needs_model", "event_not_found", "wyszukiwarka STS nie zwróciła kafla z obiema drużynami")
     if nav:
         return out("needs_model", "navigation_failed", nav)
+    # open_page bywa zmuszony do nowej karty — emulacja okna jest per karta.
+    sts_desktop_viewport()
     step("login")
     if not sts_logged_in() and os.environ.get("LV_PLACE_SKIP_LOGIN") != "1":
         return out("not_logged_in", "not_logged_in", "brak Depozyt na stronie meczu")
     before = sts_balance()
     step("clear_slip")
-    if sts_slip_has_legs() and not sts_clear_slip():
-        return out("needs_model", "betslip_not_empty", "kupon ma nogi z poprzednich biegów i nie dał się wyczyścić")
+    if not wait_until("!!document.querySelector('bs-betslip-desktop')", 10):
+        return out("needs_model", "betslip_layout_unknown", "brak kuponu bs-betslip-desktop po wymuszeniu okna 1400 px", balanceBefore=before)
+    # ZAWSZE do zera — nogi innych meczów nie są widoczne jako zaznaczone kursy na tej stronie.
+    if not sts_clear_slip():
+        return out("needs_model", "betslip_not_empty", "kupon ma %s nóg z poprzednich biegów i nie dał się wyczyścić" % sts_slip_legs(), balanceBefore=before)
+    res = sts_prepare_selection(family, dec, side, before)
+    # Zlecenie nie idzie dalej skryptem — kupon nie może zostać z naszą nogą (następne
+    # zlecenie albo model zbudowałyby na nim AKO).
+    if res.get("state") != "ready":
+        sts_clear_slip()
+    return res
+
+def sts_prepare_selection(family, dec, side, before):
     step("market")
     found = sts_find_button(sts_market_header(family, dec), sts_button_pattern(family, dec, side))
     if not isinstance(found, dict) or found.get("missing"):
@@ -521,31 +650,31 @@ def sts_prepare():
     if not odds_ok(displayed, ORDER.get("odds")):
         return out("skipped", "odds_drift", "kurs %s → %s" % (ORDER.get("odds"), displayed), balanceBefore=before)
     step("select")
-    if not sts_click_pick():
-        return out("needs_model", "selection_not_added", "klik w %s nie dodał nogi do kuponu" % found.get("label"), balanceBefore=before)
+    if not sts_click_pick(found.get("label")):
+        legs = sts_slip_legs()
+        return out("needs_model", "selection_not_added", "klik w %s: na kuponie %s nóg, kupon: %s" % (found.get("label"), legs, sts_slip_text()[:200]), balanceBefore=before)
     step("stake")
     if not sts_set_stake(ORDER.get("stake")):
         if not sts_set_stake(ORDER.get("stake")):
             return out("needs_model", "stake_not_applied", "przycisk Postaw nie pokazuje %s zł" % stake_text(ORDER.get("stake")), balanceBefore=before)
     step("verify")
     slip = sts_slip_text()
-    legs = js_val("document.querySelectorAll('.odds-button__container--selected').length")
-    if isinstance(legs, (int, float)) and legs > 1:
-        return out("needs_model", "betslip_multiple_legs", "zaznaczonych kursów: %s" % int(legs), balanceBefore=before, slip=slip)
+    if not sts_slip_matches(found.get("label")):
+        return out("needs_model", "betslip_multiple_legs", "nóg na kuponie: %s" % sts_slip_legs(), balanceBefore=before, slip=slip)
     return out("ready", None, None, actualOdds=displayed, actualStake=float(ORDER.get("stake")), balanceBefore=before,
                slip=slip, label=found.get("label"))
 
 def sts_commit():
     step("recheck")
+    sts_desktop_viewport()
     if not sts_logged_in():
         return out("not_logged_in", "not_logged_in", "sesja wygasła przed kliknięciem")
     want = re.escape(stake_text(ORDER.get("stake")))
     if not js_bool("/Postaw\\s+%s\\s*z/.test(document.body.innerText)" % want):
         return out("needs_model", "stake_not_applied", "przed kliknięciem przycisk nie pokazuje %s zł" % stake_text(ORDER.get("stake")))
-    legs = js_val("document.querySelectorAll('.odds-button__container--selected').length")
-    if legs != 1:
-        return out("needs_model", "betslip_multiple_legs", "zaznaczonych kursów: %s" % legs)
     label = js_str("(() => { const b = document.querySelector('.odds-button__container--selected'); return b ? (b.getAttribute('aria-label') || b.innerText || '').trim() : ''; })()")
+    if not sts_slip_matches(label):
+        return out("needs_model", "betslip_multiple_legs", "przed kliknięciem nóg na kuponie: %s" % sts_slip_legs())
     m = re.search(r"(\d+[.,]\d+)\s*$", label)
     displayed = float(m.group(1).replace(",", ".")) if m else None
     if displayed is None or not odds_ok(displayed, ORDER.get("odds")):
