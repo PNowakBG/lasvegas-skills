@@ -1,7 +1,8 @@
 # Playbook: Superbet (superbet.pl)
 
-**Status: SKALIBROWANY 2026-09-17** (`updated: 2026-09-17`, `verified: yes`,
-`failures: 0`). Selektory z żywej strony (Playwright + kupony agenta 17.09:
+**Status: SKALIBROWANY 2026-09-19** (`updated: 2026-09-19`, `verified: yes`,
+`failures: 1` — patrz „Log napraw”: `document.title` meczu przestał zawierać
+drużyny, skrypt `lv-place.py` padał na tym z `needs_model`). Selektory z żywej strony (Playwright + kupony agenta 17.09:
 Korona – Raków i GKS – Cracovia, rożne). Ścieżkę standardową (1X2, liczba goli,
 rożne, obie drużyny strzelą) przechodzi skrypt `scripts/lv-place.py` — Ty
 wchodzisz, gdy skrypt odda `needs_model`, i zaczynasz od kroku, który wskazał.
@@ -64,9 +65,26 @@ najdłuższy token nazwy gospodarza (np. `espanyol`, nie „RCD Espanyol”) i
 `Enter`. Wyniki to wiersze `a.e2e-event-row` z tekstem „Jutro, 21:00 … Espanyol
 Elche Mecz 1 1.85 X 3.55 2 4.15” i href
 `https://superbet.pl/kursy/pilka-nozna/espanyol-vs-elche-13847086`. Wybierz
-wiersz z OBIEMA drużynami i otwórz href (`goto_url`). Strona meczu ma tytuł
-„Espanyol vs Elche: Kursy i Zakłady | Superbet” — sprawdź obie drużyny. Jedna
-karta na bieg; po czarnym ekranie: `location.reload()`, potem `new_tab`.
+wiersz z OBIEMA drużynami i otwórz href (`goto_url`).
+
+**Weryfikacja drużyn na stronie meczu — przez `h1`, NIE przez `document.title`.**
+Od 2026-09-19 `document.title` strony meczu to generyczne „🐴 Superbet Polska”
+(poprzedzone emoji powiadomienia) i NIE zawiera nazw drużyn. Prawdziwy tytuł jest
+w nagłówku `h1`: „Espanyol vs Elche: Kursy i Zakłady” — sprawdzaj OBIE drużyny
+tam (fuzzy, jak w `text_has_team`). To jest błąd, na którym `scripts/lv-place.py`
+oddał `needs_model` (`navigation_failed: event_title_mismatch`, a wcześniej
+`event_not_found`) — developer przenosi poprawkę (h1 zamiast `document.title`) do
+skryptu. Jedna karta na bieg; po czarnym ekranie: `location.reload()`, potem `new_tab`.
+
+**Viewport musi być desktopowy (≥ ~1200 px).** Gdy okno przeglądarki jest wąskie
+(zaobserwowane 941 px), Superbet serwuje layout responsywny/mobile: NIE ma
+`.sds-betslip-desktop` ani `.e2e-betslip-submit`, a kupon to dolny pasek. Playbook
+i `lv-place.py` używają selektorów desktop. Napraw na starcie, zanim zabraknie
+kuponu: `cdp('Emulation.setDeviceMetricsOverride', width=1440, height=900,
+deviceScaleFactor=1, mobile=False)` (i ponownie po `goto_url`, gdy override
+ginie). Po dodaniu pierwszej nogi panel kuponu desktop pojawia się w DOM
+(`.sds-betslip-desktop`); przy PUSTYM kuponie na desktopie bywa nieobecny —
+brak `.sds-betslip-desktop` przy pustym kuponie to nie błąd.
 
 ## Krok 4: wybór rynku i kursu
 
@@ -111,9 +129,18 @@ klikniętym kursem (bramka 2 %).
 
 Przycisk `button.e2e-betslip-submit` („Postaw zakład”; przy wylogowaniu obok stoi
 `.e2e-login` „Zaloguj” — wtedy `failed not_logged_in`). Kliknij RAZ. Potwierdzenie:
-modal z tekstem **„ZAKŁAD POSTAWIONY”**, numer kuponu w formacie `8918-Y30U7K`
-(4 znaki, myślnik, 6 znaków) — odczytaj z modalu; saldo w nagłówku spada o stawkę
-(200,00 → 189,32 przy 10,68). Bez modalu i bez spadku salda → `failed
+modal z tekstem **„ZAKŁAD POSTAWIONY”** (tylko „Powtórz kupon” + OK — **numeru
+kuponu w modalu NIE ma**, sprawdzone 2026-09-19; modal „OK” ma też checkbox
+Supersocial — nie zaznaczaj go). Saldo w nagłówku spada o stawkę (np.
+144,10 → 134,10 przy 10 zł).
+
+**Numer kuponu — z „Moje zakłady”.** Otwórz `goto_url("https://superbet.pl/moje-zaklady/otwarte")`
+(przekierowuje z `/kupony`), zakładka „Aktywne”. Każdy kupon to element
+`[data-testid="ticket-list-item-<numer kuponu>"]` (ten sam ciąg w `id` kontenera)
+— format `NNNN-XXXXXX` (4 znaki, myślnik, 6 znaków). Dopasuj kupon po drużynach,
+rynku i stawce z chwili biegu (na liście mogą być inne kupony na ten sam mecz),
+potem odczytaj sam identyfikator:
+`[...document.querySelectorAll('[data-testid^="ticket-list-item-"]')]`. Bez modalu i bez spadku salda → `failed
 unknown_after_click` (weryfikacja), nigdy drugi klik. Znane komunikaty o limitach →
 `bookmaker_limit`; „niewystarczające środki” → `skipped insufficient_balance`.
 Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrzed> <saldoPo>`.
@@ -129,6 +156,21 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
   na bieżącym zleceniu.
 
 ## Log napraw
+
+- 2026-09-19 — **drift: `document.title` meczu bez drużyn.** Strona meczu zwraca
+  `document.title` = „🐴 Superbet Polska”; `h1` = „Korona Kielce vs Raków
+  Częstochowa: Kursy i Zakłady”. `scripts/lv-place.py` (sprawdza
+  `document.title`) oddawał `needs_model` / `event_not_found`
+  (`navigation_failed: event_title_mismatch`) mimo poprawnie otwartej strony
+  meczu. Weryfikację drużyn robić przez `h1`. Do przeniesienia w skrypcie.
+  **Wymuszony desktopowy viewport** (941 px → 1440 px przez
+  `Emulation.setDeviceMetricsOverride`), bo bez tego nie ma selektorów kuponu
+  desktop. **Numer kuponu** odczytany z `/moje-zaklady/otwarte`
+  (`[data-testid^="ticket-list-item-"]`), bo modal „ZAKŁAD POSTAWIONY” go nie
+  pokazuje. Zrealizowane zlecenia: Korona Kielce – Raków Częstochowa rożne
+  poniżej 11.5 @1.35 za 10 zł (kupon <numer kuponu>, saldo przed → po) oraz
+  Paris FC – Strasbourg 1X2 (2) @3.60 za 10 zł (kupon <numer kuponu>, kurs wyższy
+  niż w zleceniu 3.45 → wzięty, saldo przed → po).
 
 - 2026-09-17 — kalibracja pełnej ścieżki (Playwright na żywej stronie + dwa realne
   kupony agenta: GKS – Cracovia rożne poniżej 11.5 @1.69 za 10,68; Korona – Raków

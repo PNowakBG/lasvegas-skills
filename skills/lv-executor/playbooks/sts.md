@@ -1,6 +1,9 @@
 # Playbook: STS (sts.pl)
+updated: 2026-09-27   verified: yes   failures: 1
 
 Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP :9222).
+Ponownie sprawdzony na zywych zleceniach 2026-09-24 (Puchar Polski) - patrz "Log napraw".
+Czytaj tez sekcje "Wyszukiwarka", "Viewport" i Krok 4 - to poprawki z tego biegu.
 
 ## Zasady ogólne
 
@@ -44,6 +47,49 @@ jest null/`home`, szukaj: karta meczu na stronie głównej albo lupa → nazwa d
 wynik meczu. URL meczu ma postać `/kursy/<slug>/<id>` — zweryfikuj, że tytuł strony
 zawiera OBIE drużyny.
 
+### Wyszukiwarka (eventUrlKind=home) — sprawdzone 24.09.2026
+
+STS obsługuje szukanie przez parametr URL — to najpewniejsza droga i NIE wymaga
+klikania w lupkę ani wysyłania Enter:
+
+1. `goto_url("https://www.sts.pl/szukaj?s=<token>")` + `wait_for_load()`.
+   Token = najdłuższy nie-generyczny wyraz nazwy drużyny (`Lechia Gdańsk` → `lechia`,
+   `Polonia Warszawa` → `warszawa`, `Puszcza Niepołomice` → `niepolomice`).
+   Wpisanie tekstu w `#Search` tez podmienia URL na `/szukaj?s=…` po ~1 s (SPA),
+   a `Enter` tego nie psuje — ale wersja z URL-em jest deterministyczna.
+2. Poczekaj na `a[href*="/kursy/"]` (kafle wyników; klasy
+   `one-ticket-match-tile-link` NIE ma). Kafel pasuje, gdy jego `innerText` zawiera
+   najdłuższy token OBIEJ drużyn.
+3. Nagłówek "Nadchodzące" + licznik "Wyświetlono N z M wydarzeń" potwierdza wyniki.
+4. Wejdź w `href` (`/kursy/<slug>/<id>`) i sprawdź, że `document.title` zawiera OBIE drużyny.
+
+**Gotowość strony meczu — NIE licz rynków progiem > 3.** Mecze dalekie (Puchar Polski
+miesiąc naprzód) mają w ofercie TYLKO 2-3 rynki (`Mecz`, `Podwójna szansa`, `Awans`),
+więc warunek `bo-match-detail-market-wrapper` > 3 dawał fałszywe
+`navigation_failed/event_page_not_rendered` (24.09, zlecenie 9bf67d87 — strona była
+poprawna, miała dokładnie 3 bloki). Gotowość sprawdzaj po obecności obu drużyn:
+`bo-prematch-detail-info__team-name` (2 sztuki) albo `document.title` z obiema nazwami.
+
+### Viewport: layout mobilny vs desktop — sprawdzone 24.09.2026
+
+Okno agentowego Chrome potrafi wstać mikroskopijne (24.09: `innerWidth` 520 px mimo
+`--window-size=1400,900`). Poniżej ~768 px STS przełącza się na layout MOBILNY
+(`bs-betslip-mobile`) i wtedy NIE ma prawej kolumny kuponu ani `#Stawka` — kupon
+siedzi w pasku "1 Kupon | KURS CAŁKOWITY …" i trzeba go rozwinąć (modal). To wygląda
+jak "strona się zmieniła", a to tylko za wąskie okno.
+
+Naprawa (raz na bieg, PRZED budową kuponu):
+
+```python
+cdp("Emulation.setDeviceMetricsOverride", width=1400, height=900, deviceScaleFactor=1, mobile=False)
+```
+
+Po tym w DOM pojawia się `bs-betslip-desktop` z `#Stawka` i przyciskiem
+`Postaw <stawka> zł` — dalej wszystko działa jak w tym playbooku.
+Jeśli mimo to trafisz na `bs-betslip-mobile`: rozwiń pasek przyciskiem
+`.betslip-bar-default-content__action__expand-betslip button`, wtedy `#Stawka`
+(`inputmode=decimal`) i `Postaw …` są w modalu.
+
 **Dyscyplina kart:** pracuj w JEDNEJ karcie (`goto_url`), nie otwieraj nowych
 (`new_tab` tylko na samym początku, gdy nie ma żadnej prawdziwej karty). Strona meczu
 STS jest ciężka (live-kursy + trackery) — każda dodatkowa karta mnoży CPU i potrafi
@@ -55,6 +101,24 @@ znajdź `id` karty sts.pl, `curl http://localhost:9222/json/close/<id>`, potem
 `new_tab(eventUrl)` i pracuj dalej. Nigdy nie zostawiaj duplikatów kart meczu.
 
 ## Krok 4: wybór rynku i kursu
+
+**Najpierw sprawdź, czy rynek w ogóle jest w ofercie tego meczu.** Liczba rynków
+zależy od meczu: Ekstraklasa ma ich ~10 (Mecz, Podwójna szansa, Liczba goli, BTTS,
+Handicap…), a mecz Pucharu Polski miesiąc naprzód — tylko 3. Szybki test (lupka
+rynków w pasku nad listą):
+
+```python
+js("(() => { const b=document.querySelector('.bundle-menu__search-button button'); if(b) b.click(); return true; })()")
+fill_input("#Szukaj", "goli")   # wyszukiwarka RYNKÓW (id=Szukaj), nie wydarzeń
+```
+
+- wyniki (np. `Liczba goli -2.5 1.90 +2.5 1.90 …`) → rynek jest, szukaj DOKŁADNEJ linii;
+- "Brak wyników" → **całego rynku nie ma w ofercie** → NIE klikaj niczego,
+  `bash scripts/lv-api.sh skipped <betId> market_mismatch "brak rynku 'Liczba goli' …; dostępne rynki: Mecz, Podwójna szansa, Awans"`.
+  To NIE jest `event_not_found` ani `line_not_found` — mecz istnieje i ma ofertę,
+  brakuje rynku (24.09: oba zlecenia `ou2/under` na Puchar Polski tak zostały
+  rozstrzygnięte). Nagłówki `.market-tile-header__name` przy aktywnym chipie
+  "Wszystkie" to komplet renderowanych bloków — użyj ich jako listy w detail.
 
 0. **Kupon musi być PUSTY przed pierwszym klikiem.** STS trzyma nogi kuponu
    w sesji przeglądarki między przebiegami — 01.09 agent zastał na kuponie nogę
@@ -184,7 +248,12 @@ przy złej kwocie.
    `cdp("Network.enable")`; po kliknięciu `drain_events()` i znajdź odpowiedź POST-a
    stawiającego kupon (url zawiera bet/coupon/ticket) — body odpowiedzi
    (`cdp("Network.getResponseBody", requestId=...)`) zawiera numer kuponu.
-   Fallback: `Moje kupony` → `W grze` → najnowszy kupon → detal/numer.
+   Fallback: `Moje kupony` → `W grze` → klik w kartę kuponu (strzałka
+   `.my-bets-ticket-header-actions`) → modal "Kupon w grze" z polem
+   **"Numer kuponu"** (cyfry z odstępami, np. `566 726 110 083 672 374` →
+   `<numer kuponu>`); URL modala to `…(modal:szczegoly/<numer>)`. 24.09 to
+   była JEDYNA działająca droga — modal potwierdzenia po postawieniu i lista
+   "W grze" numeru NIE pokazują.
    Gdy oba zawiodą: raportuj BEZ numeru — `placed <betId> - <kurs> …` („-” w
    miejscu ticketId). NIGDY nie wpisuj betId jako numeru kuponu: fałszywy
    numer psuje weryfikację, podsumowanie na Telegram i porównanie z kontem.
@@ -199,6 +268,13 @@ przy złej kwocie.
 
 ## Pułapki
 
+- **Zamknięcie WSZYSTKICH kart zabija agentowego Chrome.** Sprzątanie na starcie
+  biegu (SKILL.md) zostawia JEDNĄ kartę roboczą — `curl .../json/close/<id>` na
+  ostatniej karcie kończy proces i CDP :9222 pada (24.09: "Connection refused",
+  `lv-login.py` zwrócił `login_error`). Wznowienie:
+  `bash scripts/lv-executor-cycle.sh ensure-chrome`.
+- **Layout mobilny przy wąskim oknie** — patrz "Viewport" wyżej. Objawy: brak prawej
+  kolumny kuponu, `Postaw` tylko w modalu, `#Stawka` nieobecny.
 - Banery „bonus / boost / zgarnij" — ignoruj, nigdy nie zaznaczaj boostów (zmieniają kurs).
 - **Minimalna stawka STS: 2 zł.** Zlecenie ze stawką < 2 zł odbije się od kasy —
   raport `skipped bookmaker_limit` (nie próbuj podnosić stawki samowolnie).
@@ -212,3 +288,56 @@ przy złej kwocie.
   sesja trzymana między cyklami zjada limit sama.
 - Wylogowanie w trakcie (znów widać `Zaloguj się`) → `failed not_logged_in`.
 - Nie klikaj `Postaw` dwa razy — po kliknięciu czekaj na ekran potwierdzenia.
+
+## Log napraw
+
+- **2026-09-27 (bieg manualny, 9 zleceń STS Puchar Polski; 2 postawione, 7 pominiętych).**
+  `lv-place.py` oddał 1x `navigation_failed/event_page_not_rendered` (36037d84)
+  i 8x `event_not_found`; WSZYSTKIE zlecenia miały `eventUrlKind: home`. Diagnoza
+  i poprawki do przeniesienia do skryptu:
+  1. **Wyszukiwarka: tylko `goto_url("/szukaj?s=<token>")`.** Ścieżka skryptu
+     (`fill_input` na `#Search` + Enter) jest zawodna i dawała `event_not_found`;
+     wejście URL-em zwróciło właściwy kafel dla WSZYSTKICH 6 meczów (deterministyczne).
+     Tokeny potwierdzone: `lechia`, `niepolomice`, `warszawa`, `opole`, `gdynia`,
+     `tarnobrzeg`. Kafel = `a[href*="/kursy/"]`, którego innerText zawiera tokeny
+     OBIE drużyn; poprawny `href` ma obie drużyny w slugu (`/kursy/<home>-<away>/<id>`).
+  2. **Gotowość strony meczu: mecze Pucharu Polski mają DOKŁADNIE 3 bloki rynków**
+     (`Mecz`, `Podwójna szansa`, `Awans`) — próg `bo-match-detail-market-wrapper > 3`
+     z `lv-place.py` daje fałszywe `event_page_not_rendered` (36037d84). Kryterium
+     gotowości: OBIE drużyny w `document.title` (potwierdzone dla wszystkich 6 meczów).
+  3. **Rynek `Liczba goli` (ou...) NIE istnieje w ofercie żadnego z 6 meczów Pucharu
+     Polski** — lupka rynków (`.bundle-menu__search-button button` -> `#Szukaj` = "goli")
+     zwraca "Brak wyników". Wszystkie zlecenia `ou2/under` i `ou3/under` (7 szt.)
+     rozstrzygnięte jako `skipped market_mismatch` z listą dostępnych rynków
+     (`Mecz, Podwójna szansa, Awans`). To NIE `event_not_found` ani `line_not_found`.
+  4. **Filtr rynków ukrywa CAŁY DOM rynków** — po wpisaniu frazy w `#Szukaj`
+     `bo-match-detail-market-wrapper` zwraca 0, a `.market-tile-header__name` jest puste
+     (wygląda jak "strona bez oferty"). Przed budową kuponu przeładuj stronę
+     (`goto_url` na ten sam URL, najlepiej z `eventUrl`) albo wyczyść filtr.
+  5. **Numer kuponu tylko z modala "Kupon w grze"** (`Moje kupony` -> `W grze` -> strzałka
+     `.my-bets-ticket-header-actions`); numer jest też w URL `...(modal:szczegoly/<numer>)`.
+     Lista "W grze" i ekran potwierdzenia numeru NIE pokazują. Bieg:
+     88424434 -> <numer kuponu> (Mecz 2, 1.90, 17.16 zł, saldo przed->po);
+     7a3a8ed9 -> <numer kuponu> (Mecz 1, 20.00, 10 zł, saldo przed->po).
+  6. **Odczyt salda po "Postaw" ma opóźnienie** — ~3 s po przyjęciu kuponu `Depozyt`
+     pokazuje jeszcze STARĄ kwotę (555,19 mimo przyjętego kuponu). Odczytuj po ~5-6 s.
+     Kryterium przyjęcia: "Przyjęliśmy Twój kupon!" ORAZ spadek salda o `stake`;
+     samo "Kurs całkowity" w treści NIE jest potwierdzeniem (jest na kuponie zawsze).
+  7. Kurs `Mecz` dla gospodarza był zgodny z `odds` (Siarka 1 -> 20.00 = zlecenie 20),
+     więc bramka kursu przeszła bez dryfu.
+
+- **2026-09-24 (bieg na żywo, 3 zlecenia STS Puchar Polski; failures: 1).**
+  `lv-place.py` oddał `navigation_failed/event_page_not_rendered` (9bf67d87)
+  i dwa `event_not_found` (6d591731, 1f46ebd1). Diagnoza i poprawki:
+  1. próg gotowości `bo-match-detail-market-wrapper` > 3 → mecze Pucharu Polski mają
+     tylko 3 rynki; nowy warunek: obie drużyny w `bo-prematch-detail-info__team-name`
+     / `document.title` (sekcja "Wyszukiwarka");
+  2. wyszukiwanie przez `goto_url("/szukaj?s=<token>")` zamiast fill+Enter (tamże);
+  3. wąskie okno agenta → layout mobilny bez `#Stawka`; naprawa przez
+     `Emulation.setDeviceMetricsOverride` (sekcja "Viewport");
+  4. brak rynku `Liczba goli` na obu meczach `ou2/under` → nowy przepis
+     `skipped market_mismatch` z listą dostępnych rynków (Krok 4);
+  5. numer kuponu tylko z modala "Kupon w grze" (Krok 6).
+  Wynik: 9bf67d87 POSTAWIONE (1x2 home, kurs 4.00, stawka 10 zł, kupon
+  <numer kuponu>, saldo przed → po); 6d591731 i 1f46ebd1 pominięte
+  (`market_mismatch`). Poprawki 1-3 i 5 do przeniesienia do `lv-place.py`.
