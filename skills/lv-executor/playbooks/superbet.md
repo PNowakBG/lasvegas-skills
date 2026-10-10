@@ -1,7 +1,7 @@
 # Playbook: Superbet (superbet.pl)
 
-**Status: SKALIBROWANY 2026-09-19** (`updated: 2026-09-19`, `verified: yes`,
-`failures: 1` — patrz „Log napraw”: `document.title` meczu przestał zawierać
+**Status: SKALIBROWANY 2026-10-10** (`updated: 2026-10-10`, `verified: yes`,
+`failures: 2` — patrz „Log napraw”: `document.title` meczu przestał zawierać
 drużyny, skrypt `lv-place.py` padał na tym z `needs_model`). Selektory z żywej strony (Playwright + kupony agenta 17.09:
 Korona – Raków i GKS – Cracovia, rożne). Ścieżkę standardową (1X2, liczba goli,
 rożne, obie drużyny strzelą) przechodzi skrypt `scripts/lv-place.py` — Ty
@@ -156,6 +156,33 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
 
 ## Log napraw
 
+- **2026-10-10 (bieg manualny, 3 zaległe zlecenia: 1× Superbet, 2× STS — wszystkie POSTAWIONE).**
+  Zlecenie Superbet oddane przez `lv-place.py` jako `market_not_found` (lista nazw „Mecz, Podwójna
+  szansa, Obie drużyny strzelą, Liczba goli, Liczba goli drużyny”):
+  1. **DRIFT paska grup rynków — to była przyczyna fałszywego `market_not_found`.** Stary selektor
+     `.sds-filter-bar__filter-container button` już NIE istnieje. Grupy rynków to teraz
+     `.sds-tabs-secondary .sds-tabs-secondary-item` (tag BUTTON, klasy
+     `sds-tabs-secondary-item--body sds-focus-on-elevation-subtle sds-tabs-secondary-item
+     e2e-sds-tabs-secondary-item`), etykiety: Wszystko, Zawodnicy, Gole, Handicap, Połowy,
+     Rzuty rożne, Kartki, Statystyki, Łączone, Szybkie, Mecz, SUPER. Z aktywną zakładką
+     „Wszystko” DOM ma TYLKO karty grup podstawowych (stąd lista z błędu skryptu). Aby dostać
+     rożne: kliknąć zakładkę „Rzuty rożne” — najlepiej `b.click()` w JS na `.sds-tabs-secondary-item`;
+     `click_at_xy` na współrzędnej okazał się zawodny (jeden raz nie przełączył). Po przełączeniu
+     pojawia się karta `.e2e-market-name` = „Liczba rzutów rożnych” z liniami 7.5…12.5 i kursami
+     w `aria-label` `.e2e-market-odd button` (np. „Liczba rzutów rożnych, Poniżej 11.5 rzutów
+     rożnych w meczu, współczynnik 1.35”). (`corners_ou115` = 11.5 → `Poniżej 11.5`.)
+  2. **Wynik zlecenia `c685c63b` (corners_ou115 under, Śląsk Wrocław – Lech Poznań):** kupon
+     **<numer kuponu>**, kurs 1.35, stawka 16,67, saldo przed → po. Selekcja z kupnia
+     potwierdzona jako „Śląsk Wrocław - Lech Poznań … poniżej 11.5 … Liczba rzutów rożnych 1.35”,
+     1 noga. Numer z `/moje-zaklady/otwarte` → `[data-testid=\"ticket-list-item-<numer kuponu>\"]`.
+  3. **Wyszukiwanie `/wyszukaj?query=<token>` DZIAŁA** (token `slask` → wiersz `a.e2e-event-row`
+     „Śląsk Wrocław Lech Poznań”, href `/kursy/pilka-nozna/slask-wroclaw-vs-lech-poznan-14025561`);
+     drużyny potwierdzone przez `h1` („Śląsk Wrocław vs Lech Poznań: Kursy i Zakłady”). UWAGA:
+     `fill_input` na `input[name=search-events]` wpisuje DOPISUJĄC (uzyskałem `wroclawwroclaw`
+     i „BRAK WYNIKÓW WYSZUKIWANIA”) — używać URL-a `/wyszukaj?query=<token>` (jeden czysty token)
+     albo najpierw wyczyścić pole. Modal „BONUS PRZYZNANY” (Super Booster 25%) wraca po wejściu
+     na stronę meczu — klikać „OK” (jest w rejestrze `overlays.superbet`).
+
 - **2026-10-09 (skill 1.5.15) — poprawki z 19.09 PRZENIESIONE do `lv-place.py`.**
   Skrypt teraz: wymusza 1440×900 (`Emulation.setDeviceMetricsOverride`), szuka przez
   `/wyszukaj?query=<token>` i bierze tylko `/kursy/pilka-nozna/` (koszykówka
@@ -167,7 +194,7 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
   `ready` (`.grouped-selection-item__delete` „Usuń”, odwód `.clear-button`), sprawdza
   nogę po drużynach i kursie na kuponie, czyta saldo z tekstu nagłówka („139,99” i
   „PLN” to osobne elementy) i bierze numer kuponu z `/moje-zaklady/otwarte`
-  (`ticket-list-item-<NNNN-XXXXXX>`, dopasowanie po drużynach i „STAWKA x,xx PLN”).
+  (`ticket-list-item-<<numer kuponu>>`, dopasowanie po drużynach i „STAWKA x,xx PLN”).
   Zakończone kupony są pod `/moje-zaklady/zakonczony` (zakładka „Rozliczone”).
   Sprawdzone na żywo bez stawiania: 1x2, ou25, btts, odds_drift, kupon z cudzą nogą,
   odczyt numeru (trafny / zła stawka / obce drużyny), prepare na zalogowanym koncie.

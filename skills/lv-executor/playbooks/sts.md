@@ -1,5 +1,5 @@
 # Playbook: STS (sts.pl)
-updated: 2026-10-09   verified: yes   failures: 2
+updated: 2026-10-10   verified: yes   failures: 3
 
 Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP :9222).
 Ponownie sprawdzony na zywych zleceniach 2026-09-24 (Puchar Polski) - patrz "Log napraw".
@@ -305,6 +305,38 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
 - Nie klikaj `Postaw` dwa razy — po kliknięciu czekaj na ekran potwierdzenia.
 
 ## Log napraw
+
+- **2026-10-10 (bieg manualny, 3 zaległe zlecenia: 1× Superbet, 2× STS — wszystkie POSTAWIONE).**
+  Dwa zlecenia STS oddane przez `lv-place.py` jako `event_not_found` („wyszukiwarka STS nie
+  zwróciła kafla z obiema drużynami”) — oba rozwiązał ten sam, znany z playbooka sposób:
+  1. **`f529d4f9` (corners_ou105 under, FC Augsburg – FC Bayern München).** `/szukaj?s=augsburg`
+     → kafel `/kursy/fc-augsburg-bayern-monachium/f3205616` („FC Augsburg - Bayern Monachium”,
+     dzisiaj 15:30, Bundesliga); kafel = `a[href*="/kursy/"]` z tokenami OBIE drużyn
+     (`augsburg` + `bayern`/`monachium`). Rynek „Liczba rzutów rożnych” (grupa „Rzuty rożne”),
+     przycisk `-10.5 1.80` (under 10.5); kurs 1.80 vs zlecenie 1.82 → −1.1% (≤ 2% → wzięty).
+     Kupon **<numer kuponu>**, stawka 10, saldo przed → po.
+  2. **`69006dd2` (ou3 under, FC Internazionale Milano – Parma Calcio 1913).** `/szukaj?s=parma`
+     → kafel `/kursy/inter-mediolan-parma/f2868175` („Inter Mediolan - Parma”, Serie A, dzisiaj
+     18:00). Linia CAŁKOWITA 3 jest w bloku **„Liczba goli (z możliwym zwrotem)”**, przycisk
+     `-3 2.55` (under 3); kurs == zlecenie 2.55. Kupon **<numer kuponu>**, stawka 10,
+     saldo przed → po.
+  3. **Bloki rynków renderują się ZWINIĘTE i nachylają się LENIWIE.** Przycisk linii pojawia się
+     dopiero po rozwinięciu bloku przyciskiem `.market-tile-header__actions button` (ikona
+     `icon-expand-more`). PEWNA metoda: `w.scrollIntoView({block:'center'})`, potem `b.click()`
+     w JS na tym przycisku; `click_at_xy` na współrzędnej bywa zawodny (współrzędna poza
+     viewportem — blok na starcie na y≈2200 px przy oknie 900 px). Bez rozwinięcia
+     `w.querySelectorAll('button')` zwraca PUSTO — łatwo to pomylić z brakiem rynku.
+     Drzeć zakładkę „Wszystko”/grupy: filtry rynków w STS to nadal sekcja nad listą, rożne
+     w nagłówku „Liczba rzutów rożnych”.
+  4. Stawka (Angular): `input[inputmode="decimal"]` — czyszczenie natywnym setterem + `input`,
+     wpis przez `cdp("Input.insertText")`, potem `change`+`blur`; kontrola `Postaw <stawka> zł`
+     i „Kurs całkowity”. Wartość domyślna/„ulubiona” bywa 10,00 — i tak ustawiać jawnie.
+  5. Numer kuponu: `/moje-zaklady/w-grze` → `.my-bets-ticket-header-actions` → modal „Kupon
+     w grze”, pole „Numer kuponu” (18 cyfr, wyświetlane ze spacjami/`\u200d`) oraz URL
+     `(modal:szczegoly/<18 cyfr>)`. Salda odczytywane po ~6 s (`Depozyt NNN,NN zł`), spadek ==
+     stake co do grosza (oba kupony).
+  6. API LasVegas rzuciło przejściowe `503` na ~40 s przy starcie pracy na STS — ponawianie
+     `lv-api.sh` co ~8 s pomogło (claim/session przeszły po powrocie serwera).
 
 - **2026-10-09 (skill 1.5.14) — poprawki z biegów 24.09–09.10 PRZENIESIONE do `lv-place.py`.**
   Przyczyna `selection_not_added`: okno agenta ma naturalnie 750 px (Wayland ignoruje

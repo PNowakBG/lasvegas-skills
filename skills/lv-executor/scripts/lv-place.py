@@ -133,18 +133,59 @@ def norm(s):
 
 GENERIC = {"fc", "cf", "sc", "ac", "afc", "bk", "ks", "mks", "gks", "rks", "club", "clube", "sport", "sporting",
            "athletic", "atletico", "united", "city", "town", "real", "de", "la", "el", "the", "kobiety", "women",
-           "balompie", "tc", "sk", "fk", "ii", "b", "u19", "u21", "u23", "ii."}
+           "balompie", "tc", "sk", "fk", "ii", "b", "u19", "u21", "u23", "ii.", "calcio", "futbol", "fussball",
+           "football", "sv", "vfb", "vfl", "tsg", "ssc", "as", "us", "ss", "rc", "rcd", "cd", "ud", "sd", "ca",
+           "if", "ik", "nk", "hnk", "osc", "ogc", "stade", "olympique", "racing", "deportivo", "utd"}
+
+# Nazwy w bazie są oryginalne (FC Bayern München, FC Internazionale Milano), STS pisze
+# po polsku (Bayern Monachium, Inter Mediolan), Superbet po niemiecku/angielsku
+# (Werder Bremen). 10.10: dwa event_not_found na STS z tego powodu.
+ALIAS_GROUPS = [
+    {"munchen", "munich", "monachium"}, {"milano", "milan", "mediolan"}, {"internazionale", "inter"},
+    {"torino", "turin", "turyn"}, {"roma", "rome", "rzym"}, {"napoli", "naples", "neapol"},
+    {"koln", "cologne", "kolonia"}, {"bremen", "brema"}, {"nurnberg", "nuremberg", "norymberga"},
+    {"hannover", "hanower"}, {"lisboa", "lisbon", "lizbona"}, {"praha", "prague", "praga"},
+    {"wien", "vienna", "wieden"}, {"london", "londyn"}, {"kobenhavn", "copenhagen", "kopenhaga"},
+    {"moskva", "moscow", "moskwa"}, {"beograd", "belgrade", "belgrad"}, {"bucuresti", "bucharest", "bukareszt"},
+    {"brugge", "bruges", "brugia"}, {"venezia", "venice", "wenecja"}, {"firenze", "florence", "florencja"},
+    {"genova", "genoa", "genua"}, {"sevilla", "seville", "sewilla"}, {"mallorca", "majorka"},
+    {"athens", "ateny"}, {"kyiv", "kiev", "kijow"}, {"warszawa", "warsaw"}, {"krakow", "cracow"},
+    {"marseille", "marsylia"}, {"paris", "paryz"}, {"zurich", "zurych"}, {"geneve", "geneva", "genewa"},
+    {"basel", "bazylea"}, {"antwerpen", "antwerp", "antwerpia"}, {"dinamo", "dynamo"},
+    {"monchengladbach", "gladbach"}, {"nottingham", "nottm"},
+]
+ALIASES = {t: g for g in ALIAS_GROUPS for t in g}
+
+def words_of(text):
+    return set(re.split(r"[^a-z0-9]+", norm(text)))
 
 def key_tokens(team):
-    toks = [t for t in re.split(r"[^a-z0-9]+", norm(team)) if len(t) >= 3 and t not in GENERIC]
+    raw = [t for t in re.split(r"[^a-z0-9]+", norm(team)) if t]
+    toks = [t for t in raw if len(t) >= 3 and t not in GENERIC and not t.isdigit()]
     if not toks:
-        toks = [t for t in re.split(r"[^a-z0-9]+", norm(team)) if len(t) >= 2]
+        toks = [t for t in raw if len(t) >= 2 and not t.isdigit()]
     return toks
 
+def variants(token):
+    return ALIASES.get(token, {token})
+
+def team_position(text, team):
+    """Indeks w tekście, gdzie stoi PIERWSZE charakterystyczne słowo drużyny (z odmianami
+    nazw miast), jako CAŁY wyraz; -1 = brak. Pierwsze, nie najdłuższe: to tożsamość
+    klubu (Legia, Inter, Bayern, Parma) — „Warszawa” pasowałaby też do Polonii."""
+    toks = key_tokens(team)
+    if not toks:
+        return -1
+    t = norm(text)
+    best = -1
+    for v in variants(toks[0]):
+        m = re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(v), t)
+        if m and (best < 0 or m.start() < best):
+            best = m.start()
+    return best
+
 def text_has_team(text, team):
-    """Najdłuższy nie-generyczny token drużyny musi być w tekście (jak w rozszerzeniu, ostrożniej)."""
-    toks = sorted(key_tokens(team), key=len, reverse=True)
-    return bool(toks) and toks[0] in text
+    return team_position(text, team) >= 0
 
 # Drużyny młodzieżowe, rezerwy, kobiety: kafel z takim znacznikiem pasuje po nazwach
 # do meczu seniorów (09.10: „warszawa” + „krakow” → Escola Varsovia Warszawa U19 –
@@ -159,22 +200,32 @@ def squad_markers(text):
     return found
 
 def team_coverage(text, home, away):
-    """Ile słów kluczowych OBU drużyn jest w tekście; 0 = brak najdłuższego słowa którejś drużyny."""
-    if not (text_has_team(text, home) and text_has_team(text, away)):
+    """Ile słów kluczowych OBU drużyn jest w tekście; 0 = brak pierwszego słowa którejś
+    drużyny, gospodarz za gościem (inny mecz: rewanż) albo obcy znacznik U19/II/kobiet."""
+    ph, pa = team_position(text, home), team_position(text, away)
+    if ph < 0 or pa < 0 or (ph > pa and key_tokens(home)[:1] != key_tokens(away)[:1]):
         return 0
     if squad_markers(text) - squad_markers(home + " " + away):
         return 0
-    return sum(1 for t in key_tokens(home) + key_tokens(away) if t in text)
+    words = words_of(text)
+    return sum(1 for t in key_tokens(home) + key_tokens(away) if variants(t) & words)
 
 def search_queries(home, away):
-    """Najdłuższy nie-generyczny token gospodarza, potem gościa — wyszukiwarki buków
-    nie lubią pełnych nazw („RCD Espanyol” zwraca pustkę, „espanyol” działa)."""
+    """Pierwsze słowo gospodarza i gościa z odmianami nazw miast („internazionale” →
+    też „inter”), potem najdłuższe — wyszukiwarki buków nie lubią pełnych nazw („RCD
+    Espanyol” zwraca pustkę, „espanyol” działa). Najwyżej 4 zapytania."""
     out = []
+    for team in (home, away):
+        toks = key_tokens(team)
+        if toks:
+            for v in [toks[0]] + sorted(variants(toks[0]) - {toks[0]}):
+                if v not in out:
+                    out.append(v)
     for team in (home, away):
         toks = sorted(key_tokens(team), key=len, reverse=True)
         if toks and toks[0] not in out:
             out.append(toks[0])
-    return out or [home]
+    return out[:4] or [home]
 
 def decode_line(digits):
     """ou25 → ("2.5", True) ; ou2 → ("2", False) ; corners_ou105 → ("10.5", True). None = nieznany klucz."""
@@ -378,6 +429,9 @@ def sts_open_event():
         while time.time() < deadline and not href:
             href = sts_tile_href(home, away)
             if not href:
+                # Kafle są, ale żaden nie pasuje — po 3 s następne słowo, nie 12 s.
+                if js_bool("document.querySelectorAll('a[href*=kursy]').length > 0"):
+                    deadline = min(deadline, time.time() + 3)
                 time.sleep(0.6)
         if href:
             break
@@ -446,7 +500,7 @@ def sts_find_button(header_re, label_re):
       const w = [...document.querySelectorAll('bo-match-detail-market-wrapper')].find(w => hre.test(((w.querySelector('.market-tile-header__name') || {}).innerText || '').trim()));
       if (!w) return {missing: 'wrapper', headers: [...document.querySelectorAll('.market-tile-header__name')].map(h => h.innerText.trim()).slice(0, 80)};
       let btns = [...w.querySelectorAll('button.odds-button__container')].filter(vis);
-      if (btns.length === 0) { const h = w.querySelector('.market-tile-header'); if (h) { h.scrollIntoView({block: 'center'}); h.click(); } return {expanded: true}; }
+      if (btns.length === 0) { w.scrollIntoView({block: 'center'}); const h = w.querySelector('.market-tile-header__actions button') || w.querySelector('.market-tile-header'); if (h) h.click(); return {expanded: true}; }
       const labels = btns.map(b => (b.getAttribute('aria-label') || b.innerText || '').trim());
       const idx = labels.findIndex(l => lre.test(l));
       if (idx < 0) return {missing: 'button', labels};
@@ -731,6 +785,8 @@ def sb_open_event():
             href = best_event_href('a.e2e-event-row, a[href*="/kursy/"]', home, away,
                                    lambda h, t: "/kursy/pilka-nozna/" in h)
             if not href:
+                if js_bool("document.querySelectorAll('a.e2e-event-row').length > 0"):
+                    deadline = min(deadline, time.time() + 3)
                 time.sleep(0.6)
         if href:
             break
@@ -808,9 +864,10 @@ def sb_odd_pattern(family, dec, side):
 
 def sb_find_odd(group_re, market_re, odd_re, side=None):
     if group_re:
-        # Chipy filtra rynków („Gole”, „Rzuty rożne”…) — bez kliknięcia rynki tej
-        # grupy w ogóle nie są w DOM (lista wirtualna).
-        js_bool("(() => { const re = new RegExp(%s, 'i'); const b = [...document.querySelectorAll('.sds-filter-bar__filter-container button')].find(b => re.test((b.innerText || '').trim())); if (!b) return false; b.scrollIntoView({block: 'center', inline: 'center'}); b.click(); return true; })()" % json.dumps(group_re))
+        # Zakładki grup rynków („Gole”, „Rzuty rożne”…) — bez kliknięcia rynki tej grupy
+        # w ogóle nie są w DOM. Od 10.10 to .sds-tabs-secondary-item (stary pasek
+        # .sds-filter-bar zniknął → fałszywe market_not_found dla rożnych).
+        js_bool("(() => { const re = new RegExp(%s, 'i'); const b = [...document.querySelectorAll('.sds-tabs-secondary-item, .sds-filter-bar__filter-container button')].find(b => re.test((b.innerText || '').trim())); if (!b) return false; b.scrollIntoView({block: 'center', inline: 'center'}); b.click(); return true; })()" % json.dumps(group_re))
         time.sleep(1.5)
     finder = """(() => {
       const mre = new RegExp(%s, 'i'); const ore = new RegExp(%s, 'i'); const side = %s;
