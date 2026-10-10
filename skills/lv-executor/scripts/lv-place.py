@@ -1011,6 +1011,12 @@ try:
     ensure_real_tab()
 except Exception:
     pass
+# Karta w tle nie renderuje animowanych modali i kuponu (jak w lv-login.py, 10.10).
+try:
+    cdp("Page.bringToFront")
+    time.sleep(0.5)
+except Exception:
+    pass
 if ORDER.get("legs"):
     out("needs_model", "ako_unsupported", "kupon wielonogowy poza skryptem")
 elif SLUG == "sts":

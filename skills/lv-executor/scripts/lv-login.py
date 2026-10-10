@@ -335,7 +335,7 @@ def sts_login():
     if not click_by_text("^Zaloguj się$"):
         return out("logged_out", "login_form_not_found", "brak przycisku „Zaloguj się” w nagłówku")
     if not wait_for_element('[data-testid="input-username"]', timeout=15, visible=True):
-        return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola e-mail")
+        return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola e-mail (karta: %s)" % js_str("document.visibilityState"))
     fill_input('[data-testid="input-username"]', USER)
     fill_input('[data-testid="input-password"]', PASS)
     time.sleep(0.5)
@@ -406,7 +406,7 @@ def sb_login():
     if not js_bool("(() => { const b = [...document.querySelectorAll('.e2e-login')].find(b => b.getBoundingClientRect().width > 0); if (!b) return false; b.click(); return true; })()"):
         return out("logged_out", "login_form_not_found", "brak przycisku .e2e-login w nagłówku")
     if not wait_for_element('input[name="usernameOrEmail"]', timeout=15, visible=True):
-        return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola usernameOrEmail")
+        return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola usernameOrEmail (karta: %s)" % js_str("document.visibilityState"))
     fill_input('input[name="usernameOrEmail"]', USER)
     fill_input('input[name="password"]', PASS)
     time.sleep(0.5)
@@ -452,6 +452,14 @@ def sb_logout():
 
 try:
     ensure_real_tab()
+except Exception:
+    pass
+# Karta harnessu bywa kartą W TLE (agent ma kilka kart, demon co cykl startuje od
+# nowa). Ukryta karta nie dostaje klatek animacji, więc animowany modal logowania
+# STS/Superbet nie pojawia się wcale — 10.10 nocą login_form_not_found u obu buków.
+try:
+    cdp("Page.bringToFront")
+    time.sleep(0.5)
 except Exception:
     pass
 try:
