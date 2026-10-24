@@ -332,12 +332,35 @@ def sts_login():
     if not USER or not PASS:
         return out("logged_out", "no_credentials", "brak LV_STS_LOGIN / LV_STS_PASSWORD")
     # Modal logowania: przycisk „Zaloguj się" w nagłówku (klik JS omija nakładki).
-    if not click_by_text("^Zaloguj się$"):
-        return out("logged_out", "login_form_not_found", "brak przycisku „Zaloguj się” w nagłówku")
-    if not wait_for_element('[data-testid="input-username"]', timeout=15, visible=True):
-        return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola e-mail (karta: %s)" % js_str("document.visibilityState"))
-    fill_input('[data-testid="input-username"]', USER)
-    fill_input('[data-testid="input-password"]', PASS)
+    # Modal logowania: od 2026-10 STS ignoruje sztuczny JS-click w nagłówku, a
+    # helper `wait_for_element` harnessu bywa ślepy na ten modal (widzi inną kartę
+    # niż js — prod 2026-10-24: 4× login_form_not_found przy złotym DOM-ie).
+    # Dlatego czekanie i fill idą przez js; modal jest osobną trasą Angulara:
+    # sts.pl/(modal:my-account) — nawigacja wprost otwiera formularz z testidami.
+    STS_FIELD_READY = ("(() => { const e = document.querySelector('[data-testid=\"input-username\"]');"
+                       " return !!e && e.getBoundingClientRect().width > 0; })()")
+    if not wait_until(STS_FIELD_READY, 6):
+        goto_url("https://www.sts.pl/(modal:my-account)")
+        if not wait_until(STS_FIELD_READY, 25):
+            if not click_by_text("^Zaloguj się$"):
+                time.sleep(3)
+                click_by_text("^Zaloguj się$")
+            if not wait_until(STS_FIELD_READY, 15):
+                return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola e-mail (karta: %s)" % js_str("document.visibilityState"))
+    if not js_bool(
+        "(() => { const e = document.querySelector('[data-testid=\"input-username\"]'); if (!e) return false;"
+        " const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
+        " set.call(e, " + json.dumps(USER) + "); e.dispatchEvent(new Event('input', { bubbles: true }));"
+        " e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()"
+    ):
+        fill_input('[data-testid="input-username"]', USER)
+    if not js_bool(
+        "(() => { const e = document.querySelector('[data-testid=\"input-password\"]'); if (!e) return false;"
+        " const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
+        " set.call(e, " + json.dumps(PASS) + "); e.dispatchEvent(new Event('input', { bubbles: true }));"
+        " e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()"
+    ):
+        fill_input('[data-testid="input-password"]', PASS)
     time.sleep(0.5)
     # Klik przed wydaniem tokenu Turnstile = formularz bez dowodu „nie-bota”.
     wait_until("!" + TURNSTILE_PENDING, 15)
