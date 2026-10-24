@@ -428,10 +428,27 @@ def sb_login():
         return out("logged_out", "no_credentials", "brak LV_SUPERBET_LOGIN / LV_SUPERBET_PASSWORD")
     if not js_bool("(() => { const b = [...document.querySelectorAll('.e2e-login')].find(b => b.getBoundingClientRect().width > 0); if (!b) return false; b.click(); return true; })()"):
         return out("logged_out", "login_form_not_found", "brak przycisku .e2e-login w nagłówku")
-    if not wait_for_element('input[name="usernameOrEmail"]', timeout=15, visible=True):
+    # Ten sam problem co STS: wbudowany wait_for_element bywa ślepy na modal
+    # (widzi inną kartę niż js), a selektory Superbeta są poprawne — czekanie
+    # i fill idą przez js (prod 2026-10-24: login_form_not_found przy złotym DOM-ie).
+    SB_USER_READY = ("(() => { const e = document.querySelector('input[name=\"usernameOrEmail\"]');"
+                     " return !!e && e.getBoundingClientRect().width > 0; })()")
+    if not wait_until(SB_USER_READY, 20):
         return out("logged_out", "login_form_not_found", "modal logowania nie pokazał pola usernameOrEmail (karta: %s)" % js_str("document.visibilityState"))
-    fill_input('input[name="usernameOrEmail"]', USER)
-    fill_input('input[name="password"]', PASS)
+    if not js_bool(
+        "(() => { const e = document.querySelector('input[name=\"usernameOrEmail\"]'); if (!e) return false;"
+        " const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
+        " set.call(e, " + json.dumps(USER) + "); e.dispatchEvent(new Event('input', { bubbles: true }));"
+        " e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()"
+    ):
+        fill_input('input[name="usernameOrEmail"]', USER)
+    if not js_bool(
+        "(() => { const e = document.querySelector('input[name=\"password\"]'); if (!e) return false;"
+        " const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;"
+        " set.call(e, " + json.dumps(PASS) + "); e.dispatchEvent(new Event('input', { bubbles: true }));"
+        " e.dispatchEvent(new Event('change', { bubbles: true })); return true; })()"
+    ):
+        fill_input('input[name="password"]', PASS)
     time.sleep(0.5)
     if not js_bool("(() => { const b = document.querySelector('#login-modal-submit, .e2e-login-submit-btn'); if (!b) return false; b.click(); return true; })()"):
         press_key("Enter")
