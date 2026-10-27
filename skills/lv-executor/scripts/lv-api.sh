@@ -91,7 +91,28 @@ esac
 
 case "$cmd" in
   orders)
-    api_curl -H "$(auth_header)" "$BASE/queue"
+    # Kupon AKO (zlecenie z `legs`) stawia wyłącznie skrypt cyklu — tylko cykl woła
+    # `orders` z LV_QUEUE_WITH_AKO=1 (zmienna na jedno wywołanie, model jej nie
+    # dziedziczy). Model pytający sam nie widzi AKO wcale: mur zamiast zdania w
+    # SKILL.md, bo 10–15 nóg klikanych ręcznie przy prawdziwych pieniądzach to za
+    # duże ryzyko pomyłki.
+    queue=$(api_curl -H "$(auth_header)" "$BASE/queue") || { rc=$?; printf '%s' "${queue:-}"; exit "$rc"; }
+    if [ "${LV_QUEUE_WITH_AKO:-0}" = "1" ] || ! command -v python3 > /dev/null 2>&1; then
+      printf '%s' "$queue"
+    else
+      printf '%s' "$queue" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except ValueError:
+    data = None
+if isinstance(data, list):
+    sys.stdout.write(json.dumps([o for o in data if not (isinstance(o, dict) and o.get("legs"))], ensure_ascii=False))
+else:
+    sys.stdout.write(raw)
+'
+    fi
     ;;
   claim)
     # claim <betId>

@@ -1,8 +1,9 @@
 # Playbook: Superbet (superbet.pl)
 
-**Status: SKALIBROWANY 2026-10-10** (`updated: 2026-10-10`, `verified: yes`,
-`failures: 2` — patrz „Log napraw”: `document.title` meczu przestał zawierać
-drużyny, skrypt `lv-place.py` padał na tym z `needs_model`). Selektory z żywej strony (Playwright + kupony agenta 17.09:
+**Status: SKALIBROWANY 2026-10-24** (`updated: 2026-10-24`, `verified: yes`,
+`failures: 4` — patrz „Log napraw”: `document.title` meczu przestał zawierać
+drużyny, skrypt `lv-place.py` padał na tym z `needs_model`; 2026-10-24 siatka rynków
+nie renderowała się bez wymuszenia klatek → `navigation_failed: event_page_not_rendered`). Selektory z żywej strony (Playwright + kupony agenta 17.09:
 Korona – Raków i GKS – Cracovia, rożne). Ścieżkę standardową (1X2, liczba goli,
 rożne, obie drużyny strzelą) przechodzi skrypt `scripts/lv-place.py` — Ty
 wchodzisz, gdy skrypt odda `needs_model`, i zaczynasz od kroku, który wskazał.
@@ -39,6 +40,11 @@ z `loginBlocked: true` (claim = 404) — patrz Krok 0 SKILL.md.
   potwierdzone na żywej stronie; storage z metody pierwotnej wygrywa.
 - **Niezalogowany**: widoczny przycisk `.e2e-login` („zaloguj") — znacznik e2e
   Superbet potwierdzony żywą sondą 2026-09-13 (nagłówek i /logowanie).
+- **Saldo (SKALIBROWANE 2026-10-24 — metoda pierwotna)**: kwota siedzi w nagłówku jako
+  osobne elementy (`<login>` / `123,45` / `PLN`). Czytaj z `document.body.innerText`
+  regexem `/(\d[\d\s\u00a0]*,\d{2})\s*PLN/` — PIERWSZY trafiony to saldo konta
+  (`123,45 PLN` → `123.45`); podaj je jako `balanceBefore`/`balanceAfter` (bez sald serwer
+  nie uzgodni budżetu i wyłączy auto-place).
 - **Saldo**: DO KALIBRACJI (`[data-testid="account-balance"]` / `.account-balance`
   to placeholdery) — jeśli nie znajdziesz kwoty, raportuj `logged_in` BEZ salda,
   nie zgaduj liczby. Znalezioną kwotę (`NNN,NN zł` → `130.50`) podaj jako
@@ -85,12 +91,28 @@ ginie). Po dodaniu pierwszej nogi panel kuponu desktop pojawia się w DOM
 (`.sds-betslip-desktop`); przy PUSTYM kuponie na desktopie bywa nieobecny —
 brak `.sds-betslip-desktop` przy pustym kuponie to nie błąd.
 
+**WYMUSZANIE KLATEK (obowiązkowe — to była przyczyna `event_page_not_rendered`).** Siatka
+rynków renderuje się LENIWIE: 233 `.e2e-expanded-market` z `.event-grid__market-placeholder`,
+a treść kart wstawia IntersectionObserver + `requestAnimationFrame`. W oknie agenta klatki
+NIE powstają samoczynnie (rAF nie odpala się, IO zostaje „pending” — `visibilityState` =
+„visible”, ale `hasFocus()` = false), więc `.e2e-market` zostaje 0 i skrypt pada na
+`event_page_not_rendered` — mimo że strona jest w pełni interaktywna (przełączanie grup
+rynków działa) i wszystkie żądania sieciowe mają 200. Po KAŻDYM `goto_url`/przeładowaniu,
+po kliku w grupę rynków i po scrollu wywołaj 6–10 razy
+`cdp("Page.captureScreenshot", format="png", captureBeyondViewport=False)` z ~0,6 s przerwy:
+zrzut ekranu zmusza kompozytor do wyprodukowania klatki, IO dostarcza wpisy, rAF rusza i karty
+się renderują (w biegu 2026-10-24: `.e2e-market` 0 → 21, `button.odd-button` → 31). Czekanie
+samo (pętla gotowości skryptu, nawet 25 s) NIE pomaga — to nie wolne ładowanie, tylko brak
+klatek. Sam `Page.startScreencast` nie wystarczył.
+
 ## Krok 4: wybór rynku i kursu
 
 Rynki to karty `.e2e-market` z nazwą w `.e2e-market-name`. Na starcie w DOM są
-tylko karty grupy „Wszystko”; grupy przełączają chipy
-`.sds-filter-bar__filter-container button` („Gole”, „Handicap”, „Połowy”,
-„Rzuty rożne”, „Kartki”, „Statystyki”) — kliknij chip, dopiero potem szukaj karty.
+tylko karty grupy „Wszystko”; grupy przełączają zakładki
+`.sds-tabs-secondary-item` („Wszystko”, „Zawodnicy”, „Gole”, „Handicap”, „Połowy”,
+„Rzuty rożne”, „Kartki”, „Statystyki”, „Łączone”, „Szybkie”) — kliknij zakładkę w JS
+(`b.click()`), WYMUŚ KLATKI (Krok 3), dopiero potem szukaj karty (stary selektor
+`.sds-filter-bar__filter-container button` NIE istnieje).
 Karta zwinięta ma przycisk `.e2e-market-collapse` (klik rozwija); „Zobacz N
 więcej zakładów” to `.e2e-expand-markets`.
 
@@ -106,6 +128,8 @@ rożne) NIE mają `.e2e-odd-name` — czytaj aria-label:
 - `corners_ou<linia>` → chip „Rzuty rożne”, karta „Liczba rzutów rożnych”, aria
   „…, Poniżej 11.5 …”; brak linii → `skipped line_not_found` z dostępnymi liniami;
 - `btts` → karta „Obie drużyny strzelą”, kursy `tak`/`nie`.
+`.e2e-market-odd` już NIE istnieje (0 elementów, 2026-10-24) — kursy czytaj z `button.odd-button`
+w karcie rynku (aria-label „…, współczynnik 1.65, active”).
 Bramka kursu (verification-rules §1) PRZED kliknięciem: kurs z aria/`.e2e-odd-value`
 niższy o >2 % niż `odds` → `skipped odds_drift`. Kupon musi być PUSTY: licznik nóg to
 tekst przycisku `.clear-button` (np. „1”); pusty kupon = `.e2e-betslip-empty-placeholder`
@@ -123,6 +147,13 @@ potem odczytaj `input.value` i sekcję „STAWKA … PLN” na kuponie. Inna kwo
 `stake` → NIE klikaj, powtórz. „POT. WYPŁATA” = stawka × kurs × 0,88 (podatek 12 %)
 — zgodność potwierdza stawkę i kurs. „KURS 1.97” na kuponie musi zgadzać się z
 klikniętym kursem (bramka 2 %).
+**Kupon NIE czyści się sam po postawieniu** — noga właśnie postawionego kuponu zostaje w panelu,
+a dodanie kolejnej nogi dałoby AKO. Przed budową następnego kuponu wyczyść `.clear-button`
+(klasa `e2e-clear-destop-betslip`); w biegu 2026-10-24 czyszczenie jednej nogi NIE pokazało
+okna potwierdzenia. Sygnał pustego kuponu: brak `.sds-betslip-desktop` (albo brak nóg w nim)
+i widoczny `.e2e-betslip-empty-placeholder`. Pole stawki pamięta wartość z POPRZEDNIEGO
+zlecenia (nie tylko kwotę domyślną) — zawsze wpisz `stake` i potwierdź „POT. WYPŁATA” =
+stawka × kurs × 0,88 (2026-10-24: 10×1.65 → 14,52; 10×1.66 → 14,61; 33,46×1.62 → 47,69).
 
 ## Krok 6: postawienie i potwierdzenie
 
@@ -155,6 +186,55 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
   na bieżącym zleceniu.
 
 ## Log napraw
+
+- **2026-10-24 (bieg manualny #2, 3 zaległe zlecenia Superbet — WSZYSTKIE POSTAWIONE; przyczyna
+  `navigation_failed: event_page_not_rendered` USTALONA I NAPRAWIONA).** Kolejka (wszystkie
+  `superbet`, `eventUrlKind: home`, bez `loginBlocked` — sesja aktywna):
+  Wisła Kraków – Raków Częstochowa `corners_ou95` over @1.65 st.10 → kupon **<nr kuponu>**
+  (saldo <saldo> → <saldo>); Jagiellonia Białystok – Wisła Płock `corners_ou105` under @1.66 st.10
+  → kupon **<nr kuponu>** (<saldo> → <saldo>); Legia Warszawa – Lech Poznań `corners_ou105` under
+  @1.62 st.33,46 → kupon **<nr kuponu>** (<saldo> → <saldo>). Kursy na kuponie == kursy zleceń
+  (1.65 / 1.66 / 1.62), stawki co do grosza, wszędzie 1 noga. Numery z `/moje-zaklady/otwarte`
+  (`[data-testid^="ticket-list-item-"]`, format `NNNN-XXXXXX`). Sesji NIE zdobywał `lv-login.py`
+  — użytkownik zalogował się ręcznie po poprzednim biegu (poprzednia próba skryptu:
+  `login_form_not_found`, wpis niżej).
+  1. **PRZYCZYNA `event_page_not_rendered`:** leniwy render siatki rynków (patrz „Krok 3:
+     WYMUSZANIE KLATEK”) — bez klatek `.e2e-market` zostaje 0 i pętla gotowości skryptu pada.
+     DO PRZENIESIENIA DO `lv-place.py`: po `goto_url`/przeładowaniu, po kliku grupy rynków
+     i po scrollu zrobić 6–10 × `Page.captureScreenshot` (≈0,6 s przerwy) PRZED testem
+     `.e2e-market`. Samo wydłużanie timeoutu nic nie daje.
+  2. **DO PRZENIESIENIA DO `lv-place.py` (selektory/kalibracja):** `.e2e-market-odd` nie istnieje
+     → kursy czytać z `button.odd-button` w karcie `.e2e-market`; saldo = pierwszy
+     `/(\d[\d\s\u00a0]*,\d{2})\s*PLN/` z `document.body.innerText`; po postawieniu trzeba
+     wyczyścić `.clear-button`, bo noga zostaje na kuponie; pole stawki pamięta poprzednią
+     wartość; `.e2e-betslip-submit` („Postaw zakład”) bez zmian.
+  3. **Pułapki potwierdzone:** modal „BONUS PRZYZNANY” (Super Booster 25%) wraca przy każdym
+     wejściu na stronę meczu — „OK” zamyka go (rejestr `overlays.superbet`), ale wpis
+     `.sds-modal` bywa jeszcze w DOM i nie blokuje kuponu; modal „ZAKŁAD POSTAWIONY” numeru
+     kuponu nie pokazuje.
+
+- **2026-10-24 (bieg manualny, 3 zalegle zlecenia Superbet - NIEPODJETE: brak zalogowania).**
+  Kolejka zwrocila 3 zlecenia `superbet` z `loginBlocked: true` (Wisla Krakow - Rakow
+  Czestochowa `corners_ou95` over 1.65 st.10; Jagiellonia - Wisla Plock `corners_ou105`
+  under 1.66 st.10; Legia Warszawa - Lech Poznan `corners_ou105` under 1.62 st.33.46).
+  `python3 scripts/lv-login.py superbet` zwrocil DWUKROTNIE wynik `logged_out` z powodem
+  `login_form_not_found` i detail "modal logowania nie pokazal pola usernameOrEmail (karta: visible)".
+  **To DRIFT DETEKCJI FORMULARZA w `lv-login.py`, nie brak poswiadczen i nie captcha.**
+  Reczna sonda TEGO SAMEGO ekranu po nieudanym skrypcie pokazala, ze formularz JEST w DOM
+  i widoczny: `input[name=usernameOrEmail]` (id `usernameOrEmail-0` oraz DRUGA kopia
+  `usernameOrEmail-2`), `input[name=password]` (id `password-1`/`password-3`) i przycisk
+  `#login-modal-submit`; modal to `.sds-modal.login-modal`, ale w DOM sa **DWIE instancje
+  modala jednoczesnie** (querySelectorAll po `.sds-modal, [role=dialog], .modal` zwraca 2
+  elementy z klasa `login-modal`). Skrypt melduje brak pola, choc pole istnieje -> prawdopodobna
+  przyczyna: pojedynczy `querySelector` + test widocznosci przewraca sie na duplikacie modala
+  (albo pole renderuje sie z opoznieniem, a skrypt nie czeka na `#login-modal-submit`).
+  **Do przeniesienia do `lv-login.py`:** brac PIERWSZY WIDOCZNY element (find po
+  offsetParent !== null) zamiast pojedynczego selektora i czekac na `#login-modal-submit`.
+  Sesja NIE zostala otwarta -> zlecenia `superbet` zostaja w kolejce na nastepny cykl
+  (nic nie claimowano, nic nie postawiono). Zgloszono `session superbet logged_out` z powodem
+  `login_form_not_found`; uzytkownik loguje sie RECZNIE w oknie agenta (`.e2e-login` ->
+  formularz) - hasla agent nie wpisuje.
+
 
 - **2026-10-10 (bieg manualny, 3 zaległe zlecenia: 1× Superbet, 2× STS — wszystkie POSTAWIONE).**
   Zlecenie Superbet oddane przez `lv-place.py` jako `market_not_found` (lista nazw „Mecz, Podwójna
@@ -192,7 +272,7 @@ Raport: `bash scripts/lv-api.sh placed <betId> <numer> <kurs> <stawka> <saldoPrz
   `.sds-betslip-desktop .betslip-selection-item` (pusty kupon bywa bez panelu = 0),
   czyści kupon do zera przed każdym zleceniem i po każdym, które nie doszło do
   `ready` (`.grouped-selection-item__delete` „Usuń”, odwód `.clear-button`), sprawdza
-  nogę po drużynach i kursie na kuponie, czyta saldo z tekstu nagłówka („123,45” i
+  nogę po drużynach i kursie na kuponie, czyta saldo z tekstu nagłówka („<saldo>” i
   „PLN” to osobne elementy) i bierze numer kuponu z `/moje-zaklady/otwarte`
   (`ticket-list-item-<<numer kuponu>>`, dopasowanie po drużynach i „STAWKA x,xx PLN”).
   Zakończone kupony są pod `/moje-zaklady/zakonczony` (zakładka „Rozliczone”).

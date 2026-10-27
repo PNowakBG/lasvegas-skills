@@ -1,5 +1,5 @@
 # Playbook: STS (sts.pl)
-updated: 2026-10-10   verified: yes   failures: 3
+updated: 2026-10-24   verified: yes   failures: 4
 
 Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP :9222).
 Ponownie sprawdzony na zywych zleceniach 2026-09-24 (Puchar Polski) - patrz "Log napraw".
@@ -63,10 +63,20 @@ klikania w lupkę ani wysyłania Enter:
 
 **Tokeny potwierdzone:** `lechia`, `niepolomice`, `warszawa`, `opole`, `gdynia`,
 `tarnobrzeg` (27.09) + `wieczysta`, `podbeskidzie`, `rakow`, `malaga`, `lens`,
-`dortmund`, `hoffenheim` (09.10). Wyszukiwarka zwraca tez mecze esportowe
+`dortmund`, `hoffenheim` (09.10), `barcelona` (24.10). Wyszukiwarka zwraca tez mecze esportowe
 (`B Dortmund (Bjela)`) — filtruj kafel po tokenie PRZECIWNIKA (nie tylko gospodarza),
 inaczej latwo wejsc w esport zamiast realnego meczu (09.10: `szukaj?s=dortmund`
 zwrocilo najpierw 4 esporty, Borussia realna byla dopiero 5. w liscie).
+
+**Nazwy klubow sa POLSKIE - token PRZECIWNIKA bywa nieprzetlumaczalny (24.10.2026).**
+STS pisze `Real Madryt` (nie `Real Madrid`), `Bayern Monachium` (nie `Bayern Muenchen`).
+Zlecenie niesie nazwe zrodlowa, wiec filtr "tokeny OBIE druzyn" potrafi nie trafic w ZADEN
+kafel i skrypt oddaje `event_not_found` (24.10: zlecenie `621329b6`, FC Barcelona - Real
+Madrid CF). Szukaj tokenem GOSPODARZA (`barcelona`), a kafel wybieraj po LIDZE ze zlecenia
+(`la-liga` -> "Hiszpania, LaLiga"), odrzucajac `Esports Battle`/nazwy w nawiasach
+(`barcelona-(borees)-real-madrid-(rodja)`) oraz `B`/`[K]`/koszykowke; OBIE druzyny
+potwierdzasz dopiero na stronie meczu (tokeny moga roznic sie pisownia: `barcelona` + `madryt`).
+**NAPRAWIONE 24.10.2026 w `lv-place.py` (potwierdzone na zleceniu `621329b6`):** pary "nazwa ze zlecenia -> pisownia STS" trzyma teraz tabela `ALIAS_GROUPS` (`{"madrid", "madryt"}`); kolejna taka para to jedna linia w tej tabeli — bez oslabiania filtra obu tokenow i bez wybierania kafla po samej lidze.
 
 **Gotowość strony meczu — NIE licz rynków progiem > 3.** Mecze dalekie (Puchar Polski
 miesiąc naprzód) mają w ofercie TYLKO 2-3 rynki (`Mecz`, `Podwójna szansa`, `Awans`),
@@ -306,6 +316,69 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
 
 ## Log napraw
 
+- **2026-10-24 (bieg manualny, zlecenie `621329b6` wróciło z kolejki — rozstrzygnięte `skipped odds_drift`, raport DOSTARCZONY).**
+  Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95, stawka 31.42)
+  wróciło do kolejki LasVegas mimo wcześniejszej diagnozy — poprzedni raport `skipped` nie doszedł
+  (patrz wpisy niżej). Cała ścieżka przeszła BEZ zmian względem playbooka; powtórzony bieg dostarczył raport:
+  1. **Wyszukiwarka:** `goto_url("https://www.sts.pl/szukaj?s=barcelona")` → kafel
+     `/kursy/barcelona-real-madryt/f3136314` („Hiszpania, LaLiga, Barcelona - Real Madryt, jutro 21:00",
+     +939 rynków). Token przeciwnika ze zlecenia (`Real Madrid CF` → `madrid`) nadal NIE występuje ani
+     w slugu, ani w tekście kafla (STS pisze `Real Madryt`), więc filtr „oba tokeny" z `lv-place.py`
+     daje `event_not_found`. **Do przeniesienia do `lv-place.py` (KANDYDAT #1):** fallback
+     „token GOSPODARZA + liga ze zlecenia", odrzucanie esportu (nazwy w nawiasach — `s=barcelona` zwróciło
+     6 kafli esportowych), rezerw (`FC Barcelona B`/`Atletic`) i kobiet (`[K]`), koszykówki; OBIE drużyny
+     potwierdzać dopiero na stronie meczu. `document.title` strony meczu =
+     „Kursy Barcelona - Real Madryt | Piłka Nożna - LaLiga w STS" (obie drużyny OK).
+  2. **Rynek:** blok `.market-tile-header__name` == `Liczba rzutów rożnych` renderuje się ZWINIĘTY —
+     rozwinąć przyciskiem `.market-tile-header__actions button` po wyśrodkowaniu bloku przez scrollIntoView.
+     Po rozwinęciu przyciski: `-8.5 3.30` / `+8.5 1.28` / `-9.5 2.45` / `+9.5 1.47` / **`-10.5 1.90`** /
+     `+10.5 1.75` / `-11.5 1.60` / `+11.5 2.20` / `-12.5 1.37` / `+12.5 2.80`. Linia zlecenia 10,5 →
+     przycisk `-10.5` (under = „Poniżej"). Linia ISTNIEJE (`line_not_found` nie wchodzi w grę).
+  3. **Bramka kursu:** 1.95 (zlecenie) → **1.90** (ekran) = (1.95-1.90)/1.95 = **2,56% > 2%** →
+     `skipped odds_drift` wg `verification-rules.md` §1. Odczyt stabilny 2x w odstępie 6 s (dryf, nie
+     migotanie). Bramka PRZED klikiem — NIE kliknięto „Postaw". Kupon pozostał PUSTY („Ten kupon czeka na zakłady").
+  4. **Sesja STS:** zalogowany przez cały bieg (`Depozyt <saldo> zł`), viewport wymuszony 1400x900
+     (`Emulation.setDeviceMetricsOverride`). Zaraportowano `session sts logged_in <saldo>`.
+  5. **Raport:** `skipped <betId> odds_drift "kurs 1.95 -> 1.90 (Poniżej 10.5, Liczba rzutów rożnych; -2,56%)"`
+     — LasVegas potwierdził `abortReason: odds_drift`, `abortDetail` j.w., kolejka STS PUSTA (zwolniona).
+
+- **2026-10-24 (powtorny bieg manualny, zlecenie `621329b6` — rozstrzygniete `skipped odds_drift`; kolejka zwolniona).**
+  Poprzedni bieg udokumentowal diagnoze, ale zlecenie wciaz bylo w kolejce LasVegas (raport `skipped` nie doszedl). Powtorzony bieg potwierdzil cala sciezke:
+  1. Wyszukiwarka: `goto_url("https://www.sts.pl/szukaj?s=barcelona")` -> kafel `/kursy/barcelona-real-madryt/f3136314` ("Hiszpania, LaLiga, Barcelona - Real Madryt, jutro 21:00", +939 rynkow). Token przeciwnika ze zlecenia (`Real Madrid CF` -> `madrid`) NIE wystepuje w slugu (`real-madryt`) ani w tekscie kafla — filtr "oba tokeny" w `lv-place.py` daje `event_not_found`. **Do przeniesienia do `lv-place.py`:** fallback "token gospodarza + liga ze zlecenia" zamiast wymogu obu tokenow.
+  2. Rynek `Liczba rzutow roznych` renderuje sie ZWINIETY; rozwin przez `.market-tile-header__actions button` po `w.scrollIntoView`; linie `-8.5 3.30` ... `-12.5 1.37`; linia zlecenia 10,5 -> przycisk `-10.5 1.90` (under). Linia ISTNIEJE.
+  3. Bramka kursu: 1.95 (zlecenie) -> 1.90 (ekran) = -2.56% > 2% -> `skipped odds_drift` (odczyt stabilny 2x w odstepie 6 s). Kupon pozostal PUSTY (0 nog).
+  4. Sesja: `Depozyt <saldo> zl`, zaraportowana `session sts logged_in <saldo>`.
+  5. LasVegas: `abortReason: odds_drift`, kolejka STS pusta po raporcie.
+
+
+- **2026-10-24 (bieg manualny, 1 zalegle zlecenie STS, `621329b6` - rozstrzygniete `skipped`).**
+  Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95,
+  stawka 31.42) oddane przez `lv-place.py` jako `event_not_found` (wyszukiwarka nie zwrocila
+  kafla z obiema druzynami). Przyczyna NIE lezy w wyszukiwarce - to filtr kafla skryptu.
+  1. **Mecz JEST w ofercie** - `goto_url("https://www.sts.pl/szukaj?s=barcelona")` zwrocilo
+     `/kursy/barcelona-real-madryt/f3136314` ("Hiszpania, LaLiga, Barcelona - Real Madryt,
+     jutro 21:00", +939 rynkow). Token przeciwnika ze zlecenia (`Real Madrid CF` -> `madrid`)
+     NIE wystepuje ani w tekscie kafla, ani w slugu - STS pisze **`Real Madryt`**. Filtr
+     "oba tokeny" = zero dopasowan -> `event_not_found`. Patrz nowy akapit w "Wyszukiwarka":
+     szukaj tokenem gospodarza, wybieraj kafel po LIDZE, odrzucaj esport/rezerwy/kobiety
+     (`s=barcelona` zwrocilo 14 kafli: 6 esportowych + `B`/`[K]`/koszykowka), OBIE druzyny
+     potwierdz na stronie meczu. **Do przeniesienia do `lv-place.py`:** brak fallbacku na
+     polskie nazwy klubow (translacja `Madrid`->`Madryt` albo "token gospodarza + liga").
+  2. **Rynek rożnych jest, linia DOKLADNA.** Blok `Liczba rzutow rożnych` renderuje sie zwiniety;
+     po rozwinieciu (`.market-tile-header__actions button`; `w.scrollIntoView({block:'center'})`
+     + `b.click()` w JS) wiersze: `-8.5 3.30` ... `-12.5 2.80`. Linia zlecenia 10.5 -> przycisk
+     `-10.5 1.90` (under/"Poniżej"). Linia ISTNIEJE (`line_not_found` nie wchodzi w gre).
+  3. **Wynik: `skipped odds_drift`, kurs 1.95 (zlecenie) -> 1.90 (ekran).** (1.95-1.90)/1.95 =
+     2.56% > 2% -> bramka par. 1 `verification-rules.md`; NIE kliknieto "Postaw" (bramka PRZED
+     klikiem, Krok 4). Odczyt powtorzony 2x w odstepie 6 s - stabilny 1.90 (dryf, nie migotanie).
+     Kupon pozostal PUSTY (0 nog, "Ten kupon czeka na zaklady").
+  4. Sesja STS zalogowana przez caly bieg (`Depozyt <saldo> zl`), zaraportowana
+     `session sts logged_in <saldo>`. Viewport wymuszony 1400x900
+     (`Emulation.setDeviceMetricsOverride`).
+  5. Slad w LasVegas: `abortReason: odds_drift`, `abortDetail: "kurs 1.95 -> 1.90
+     (Poniżej 10.5, Liczba rzutow rożnych; -2,56%)"`.
+
+
 - **2026-10-10 (bieg manualny, 3 zaległe zlecenia: 1× Superbet, 2× STS — wszystkie POSTAWIONE).**
   Dwa zlecenia STS oddane przez `lv-place.py` jako `event_not_found` („wyszukiwarka STS nie
   zwróciła kafla z obiema drużynami”) — oba rozwiązał ten sam, znany z playbooka sposób:
@@ -436,3 +509,96 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   Wynik: 9bf67d87 POSTAWIONE (1x2 home, kurs 4.00, stawka 10 zł, kupon
   <numer kuponu>, saldo przed → po); 6d591731 i 1f46ebd1 pominięte
   (`market_mismatch`). Poprawki 1-3 i 5 do przeniesienia do `lv-place.py`.
+
+- **2026-10-24 (bieg manualny Hermes, zlecenie `621329b6` — PONOWNIE w kolejce mimo wpisow wyzej; rozstrzygniete `skipped odds_drift`, raport POTWIERDZONY w API).**
+  Wpis korygujacy: poprzednie trzy wpisy z 2026-10-24 twierdzily, ze kolejka zostala zwolniona — zlecenie wrocilo
+  znowu (autoStatus nie byl zamkniety po stronie kolejki). Ten bieg zamknal je realnie: API zwraca status=placed, autoStatus=aborted,
+  abortReason=odds_drift. UWAGA: stawka w tej iteracji = 10 (nie 31.42 jak w starszych wpisach).
+  1. Wyszukiwarka: `goto_url("https://www.sts.pl/szukaj?s=barcelona")` zwrocilo 17 kafli. Wlasciwy:
+     `/kursy/barcelona-real-madryt/f3136314` ("Hiszpania, LaLiga +939 Barcelona - Real Madryt jutro, 21:00").
+     Token przeciwnika ze zlecenia (`Real Madrid CF` -> `madrid`) NIE wystepuje w slugu (`real-madryt`) ani w tekscie
+     — STS pisze `Real Madryt`. Filtr "oba tokeny" w `lv-place.py` = 0 dopasowan -> `event_not_found`.
+     Wybor kafla: token GOSPODARZA (`barcelona`) + LIGA ze zlecenia (`la-liga` -> "Hiszpania, LaLiga"), odrzucajac
+     esport (nazwy w nawiasach: `barcelona-(hrk)-real-madrid-(kirman)`), rezerwy (`FC Barcelona B`/`Atletic`),
+     kobiety (`[K]`) i koszykowke (`Liga ACB`). OBIE druzyny potwierdzane dopiero na stronie meczu:
+     `document.title` == "Kursy Barcelona - Real Madryt | Pilka Nozna - LaLiga w STS".
+  2. Rynek: blok `.market-tile-header__name` == `Liczba rzutow roznych` renderuje sie ZWINIETY; rozwin
+     `.market-tile-header__actions button` po `w.scrollIntoView({block:"center"})`. Po rozwinieciu linie:
+     `-8.5 3.30` / `+8.5 1.28` / `-9.5 2.45` / `+9.5 1.47` / `-10.5 1.90` / `+10.5 1.75` / `-11.5 1.60` /
+     `+11.5 2.20` / `-12.5 1.37` / `+12.5 2.80`. Linia zlecenia 10,5 -> przycisk `-10.5` (under = "Ponizej"). Linia ISTNIEJE.
+  3. Bramka kursu: 1.95 (zlecenie) -> 1.90 (ekran) = (1.95-1.90)/1.95 = 2,56% > 2% -> `skipped odds_drift`
+     (verification-rules par. 1). Odczyt stabilny 2x w odstepie 6 s. Bramka PRZED klikiem — kupon pozostal PUSTY (0 nog).
+  4. Sesja STS: zalogowany caly bieg (`Depozyt <saldo> zl`), zaraportowano `session sts logged_in <saldo>`;
+     viewport wymuszony 1400x900 (`Emulation.setDeviceMetricsOverride`).
+  5. Raport: `skipped 621329b6 odds_drift "kurs 1.95 -> 1.90 (Ponizej 10.5, Liczba rzutow roznych; -2,56%)"`;
+     API potwierdzilo `abortReason: odds_drift`; kolejka STS PUSTA.
+  **Do przeniesienia do `lv-place.py` (KANDYDAT #1, wciaz nie zrobione):** fallback wyszukiwarki "token GOSPODARZA + liga ze
+  zlecenia" zamiast wymogu obu tokenow, plus odrzucanie esportu/rezerw/kobiet/koszykowki; obie druzyny potwierdzac na stronie meczu.
+
+- **2026-10-24 (bieg manualny Hermes, zlecenie `621329b6` — NAPRAWA wyszukiwarki + rozstrzygnięcie `skipped odds_drift`; kolejka zwolniona).**
+  Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95, stawka 31.42)
+  oddane przez `lv-place.py` jako `event_not_found`. Naprawa ścieżki wg playbooka, wynik: `skipped odds_drift`.
+  1. **Wyszukiwarka — NAPRAWA (KANDYDAT #1 dla `lv-place.py`, potwierdzony).** `lv-place.py` wymaga kafla
+     z tokenami OBIE drużyn; token przeciwnika ze zlecenia (`Real Madrid CF` -> `madrid`) NIE występuje
+     ani w slugu (`/kursy/barcelona-real-madryt/...`), ani w tekście kafla — **STS pisze `Real Madryt`,
+     nie `Real Madrid`**. Filtr „oba tokeny" = 0 dopasowań -> `event_not_found`.
+     **Skuteczna metoda:** `goto_url("https://www.sts.pl/szukaj?s=<token gospodarza>")`
+     (`s=barcelona` zwróciło 16 kafli), wybór kafla po TOKENIE GOSPODARZA (`barcelona`) + LIDZE ze
+     zlecenia (`la-liga` -> „Hiszpania, LaLiga"), z odrzuceniem: esportu (kafel z nazwami w nawiasach,
+     `La Liga` z sufiksem `+9`, `barcelona-(hrk)`/`(borees)`), rezerw (`FC Barcelona B`/`FC Barcelona Atletic`),
+     kobiet (`Barcelona [K]`), koszykówki (`Liga ACB`) oraz innych sekcji (`Segunda Division`, Ekwador, Euroliga).
+     Trafiony kafel: `/kursy/barcelona-real-madryt/f3136314` („Hiszpania, LaLiga +939 Barcelona - Real Madryt
+     jutro, 21:00"). **OBIE drużyny potwierdzone dopiero na stronie meczu:** `document.title` ==
+     „Kursy Barcelona - Real Madryt | Piłka Nożna - w STS". Do przeniesienia do `lv-place.py`: fallback
+     „token GOSPODARZA + liga ze zlecenia" zamiast wymogu obu tokenów (transakcja/translacja `Madrid`->`Madryt`).
+  2. **Rynek `Liczba rzutów rożnych` renderuje się ZWINIĘTY.** `bo-match-detail-market-wrapper` z tym
+     nagłówkiem na starcie ma 1 przycisk (bez etykiety). Rozwija go
+     `w.querySelector('.market-tile-header__actions button').click()` po `w.scrollIntoView({block:'center'})`.
+     Po rozwinięciu wiersze: `-8.5 3.30` / `+8.5 1.28` / `-9.5 2.45` / `+9.5 1.47` / **`-10.5 1.90`** /
+     `+10.5 1.75` / `-11.5 1.60` / `+11.5 2.20` / `-12.5 1.37` / `+12.5 2.80`. Linia zlecenia 10,5 →
+     przycisk `-10.5` (under = „Poniżej"). **Linia ISTNIEJE** (`line_not_found` nie wchodzi w grę).
+  3. **Bramka kursu (verification-rules §1):** 1.95 (zlecenie) → **1.90** (ekran), (1.95-1.90)/1.95 = **2,56 % > 2 %**
+     → `skipped odds_drift`. Odczyt powtórzony 2x w odstępie 6 s — stabilny 1.90 (dryf, nie migotanie).
+     Bramka PRZED klikiem — NIE kliknięto „Postaw"; kupon pozostał PUSTY.
+  4. **Sesja STS:** zalogowany cały bieg (`Depozyt <saldo> zł`), zaraportowano `session sts logged_in <saldo>`;
+     viewport wymuszony 1400×900 (`Emulation.setDeviceMetricsOverride`).
+  5. **Raport i ślad w API:** `skipped 621329b6 odds_drift "kurs 1.95 -> 1.90 (Poniżej 10,5, Liczba rzutów rożnych; -2,56%)"`;
+     API potwierdziło `autoStatus=aborted`, `abortReason=odds_drift`, `abortDetail` jw.; `orders` po raporcie = `[]` (kolejka STS pusta).
+
+- **2026-10-24 (bieg manualny Hermes, zalegle zlecenie `621329b6` po `event_not_found` — NAJPIERW naprawa PRZYCZYNY w skrypcie, potem rozstrzygniecie `skipped odds_drift`; kolejka zwolniona).**
+  Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95, stawka 31.42)
+  po raz kolejny oddane przez `lv-place.py` jako `event_not_found`. Tym razem naprawiono PRZYCZYNE w skrypcie.
+  1. **NAPRAWA `lv-place.py` (KANDYDAT #1 z wpisow 24.10 — ZROBIONE).** Przyczyna nie lezy w wyszukiwarce STS,
+     tylko w tabeli `ALIAS_GROUPS` (funkcje `variants()` i `team_coverage()`): zlecenie niesie `Real Madrid CF`,
+     a STS pisze `Real Madryt`, wiec token `madrid` nie mial zadnej odmiany i filtr "oba tokeny" dawal 0 dopasowan.
+     Dodano grupe `{"madrid", "madryt"}` na poczatek `ALIAS_GROUPS` w `scripts/lv-place.py`
+     (obok istniejacej `{"munchen", "monachium"}`).
+     **Regula ogolna dla przyszlych biegow:** `event_not_found` mimo poprawnych nazw druzyn w zleceniu =
+     dopisz pare "pisownia zlecenia -> pisownia STS" do `ALIAS_GROUPS`; NIE luzuj filtra do "token gospodarza + liga"
+     (czesciowa naprawa; zlecenie ma nazwe zrodlowa, STS polska, wiec tlumaczenie w JEDNYM miejscu obsluguje tez
+     inne ligi i nie oslabia ochrony przed rezerwami/kobietami/esportem).
+     Weryfikacja na sucho (bez klikania): `python3 scripts/lv-place.py prepare < zlecenie.json` -> tym razem
+     `state: skipped`, `reason: odds_drift`, `detail: "kurs 1.95 → 1.9"`, `step: market` — czyli mecz ZNALEZIONY,
+     rynek i linia odczytane; wczesniej ten sam skrypt konczyl na `event_not_found`.
+  2. **Sciezka reczna (potwierdzenie na ekranie, playbook bez zmian):** `goto_url("https://www.sts.pl/szukaj?s=barcelona")`
+     -> 14 kafli, wlasciwy `/kursy/barcelona-real-madryt/f3136314` ("Hiszpania, LaLiga +939 Barcelona - Real Madryt,
+     jutro 21:00"); odrzucone kafle: esport (`barcelona-(borees)` / `(rodja)`), rezerwy (`FC Barcelona B` /
+     `FC Barcelona Atletic`), kobiety (`Barcelona [K]`), koszykowka (`Liga ACB`), Segunda Division, Euroliga,
+     Ekwador. `document.title` strony meczu == "Kursy Barcelona - Real Madryt | Pilka Nozna - LaLiga w STS"
+     (OBIE druzyny potwierdzone na stronie meczu, nie na kaflu).
+  3. **Rynek:** blok `.market-tile-header__name` == `Liczba rzutów rożnych` renderuje sie ZWINIETY (1 przycisk =
+     "Rozwiń"); rozwija go `w.querySelector(".market-tile-header__actions button").click()` po
+     `w.scrollIntoView({block:"center"})`. Po rozwinieciu przyciski: `-8.5 3.30` / `+8.5 1.28` / `-9.5 2.45` /
+     `+9.5 1.47` / `-10.5 1.90` / `+10.5 1.75` / `-11.5 1.60` / `+11.5 2.20` / `-12.5 1.37` / `+12.5 2.80`.
+     Linia zlecenia 10,5 -> przycisk `-10.5` (under = "Poniżej") — linia ISTNIEJE (`line_not_found` nie wchodzi w gre).
+  4. **Bramka kursu (verification-rules §1):** 1.95 (zlecenie) -> 1.90 (ekran) = (1.95-1.90)/1.95 = **2,56 % > 2 %**
+     -> `skipped odds_drift`. Odczyt powtorzony 2x w odstepie 6 s — stabilny 1.90 (dryf, nie migotanie).
+     Bramka PRZED klikiem: NIE kliknieto "Postaw", kupon pozostal PUSTY (0 nog, "Ten kupon czeka na zaklady").
+  5. **Sesja STS:** zalogowany caly bieg (`Depozyt <saldo> zł`), zaraportowano `session sts logged_in <saldo>`;
+     viewport wymuszony 1400x900 (`Emulation.setDeviceMetricsOverride`).
+  6. **Raport i slad w API:** `skipped 621329b6 odds_drift "kurs 1.95 -> 1.90 (Poniżej 10,5, Liczba rzutów rożnych; -2,56%)"`
+     -> API: `status: placed`, `autoStatus: aborted`, `abortReason: odds_drift`, `abortDetail` j.w., `confirmedAt`
+     ustawione; `orders` po raporcie = `[]` (kolejka STS pusta).
+  **Kryterium "zlecenie naprawde zamkniete" (bląd poprzednich wpisow z 24.10):** nie wystarczy wyslac raportu —
+  trzeba go POTWIERDZIC w API: `autoStatus: aborted` + `abortReason` w odpowiedzi `skipped`/`failed` oraz pusta lista
+  `orders`. Wczesniejsze wpisy meldowaly "kolejka zwolniona" po samym wyslaniu raportu, a zlecenie wracalo.

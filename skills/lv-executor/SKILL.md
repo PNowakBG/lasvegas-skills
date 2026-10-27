@@ -103,6 +103,10 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    selektor), DOKUMENTUJ ją w playbooku po biegu: developer przenosi ją do skryptu.
    Sam też możesz użyć skryptu na sucho: `python3 scripts/lv-place.py prepare < zlecenie.json`
    (JSON zlecenia z `orders`) — kończy na zweryfikowanym kuponie bez klikania.
+   **Kupon AKO (zlecenie z `legs`) NIE jest Twój.** Taśmę pewniaków (10–15 nóg)
+   stawia wyłącznie skrypt, i tylko w STS — `lv-api.sh orders` nie pokazuje Ci jej
+   wcale. Gdy mimo to trafisz na takie zlecenie, pomiń je bez claimu i bez raportu.
+   Wolno Ci za to ROZSTRZYGNĄĆ jego weryfikację (Krok 0): to tylko odczyt kuponów.
 3. **Claim.** `bash scripts/lv-api.sh claim <betId>` — każdy błąd = pomiń to
    zlecenie i idź do następnego, BEZ śledztwa (17.09: agent spędził cały bieg
    na dociekaniu „kto mi wziął zlecenie”). Treść odpowiedzi mówi dlaczego:

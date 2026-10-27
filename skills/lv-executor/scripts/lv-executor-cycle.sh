@@ -110,6 +110,29 @@ lv_api() {
     bash "$SKILL_DIR/scripts/lv-api.sh" "$@"
 }
 
+# lv_api z odpowiedzią dopisaną do logu w OSOBNEJ linii. Odpowiedź API nie kończy
+# się znakiem nowej linii, więc następny wpis sklejał się z JSON-em („{…}2026-10-10
+# 18:15:22 skrypt … commit → placed") i grep po początku linii go gubił.
+lv_api_log() {
+  local out rc=0
+  out=$(lv_api "$@" 2>&1) || rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" >> "$LOG"
+  return "$rc"
+}
+
+# 0, gdy wersja $1 jest NOWSZA niż $2 (kropkowe, porównanie numeryczne).
+# awk zamiast „sort -V", którego nie ma w każdym sort na macOS.
+version_gt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+    for (i = 1; i <= k; i++) {
+      if ((x[i] + 0) > (y[i] + 0)) exit 0
+      if ((x[i] + 0) < (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+
 # Meldunek o TYM komputerze, doklejany do pytania o model. LasVegas nie widzi
 # maszyny użytkownika, a strona „Do zrobienia na Twoim komputerze" ma odhaczać
 # kroki, których serwer nie zrobi sam: wersja skilla, system, DLA KTÓRYCH buków
@@ -497,6 +520,12 @@ skill_selfupdate() {
     [ -n "$force" ] && echo "aktualne ($local_ver)"
     return 0
   fi
+  # Tylko w górę. 24.10.2026 lokalny 1.5.18 (podbity ręcznie przy naprawie
+  # logowania) „zaktualizował się" do 1.5.17 z tapa i skasował poprawkę.
+  if [ -n "$local_ver" ] && ! version_gt "$remote" "$local_ver"; then
+    [ -n "$force" ] && echo "lokalna wersja $local_ver jest nowsza niż w tapie ($remote) — bez zmian"
+    return 0
+  fi
   log "nowa wersja skilla: ${local_ver:-brak VERSION} → $remote — instaluję z tapa"
   # Ta sama para komend co w instalatorze (install.sh, krok 3): tap add z || true,
   # bo tap zwykle już jest; --force, bo bez niego stary skill zostaje na dysku.
@@ -661,7 +690,8 @@ load_env() {
 # Cały dostęp do API idzie przez lv-api.sh — to jedyne miejsce, które czyta
 # token urządzenia. Ten skrypt nie składa już samodzielnie żadnego żądania.
 queue_json() {
-  lv_api 15 orders
+  # Tylko cykl widzi kupony AKO (lv-api.sh orders) — stawia je skrypt, nie model.
+  LV_QUEUE_WITH_AKO=1 lv_api 15 orders
 }
 
 case "${1:-cycle}" in
@@ -874,7 +904,7 @@ place_result() {
   printf '%s\n' "$1" | grep '^LV_PLACE_RESULT ' | tail -1 | sed 's/^LV_PLACE_RESULT //'
 }
 fast_path() {
-  local queue="$1" py order betId slug res state reason detail ticket odds stake before after
+  local queue="$1" py order betId slug res state reason detail ticket odds stake before after step ako
   py=$(python_bin) || { log "szybka ścieżka: brak python3 — wszystko idzie do modelu"; return 0; }
   [ -f "$PLACE_PY" ] || { log "szybka ścieżka: brak $PLACE_PY"; return 0; }
   while IFS= read -r order; do
@@ -889,13 +919,16 @@ fast_path() {
     FAST_TRIED=$((FAST_TRIED + 1))
     betId=$(json_field "$order" betId)
     slug=$(json_field "$order" bookmaker)
+    # Kupon AKO nigdy nie idzie do modelu (SKILL.md): porażki skryptu wracają do
+    # serwera kodem, a nie do FAST_NOTES, które budzą model z betId w poleceniu.
+    case "$order" in *'"legs": ['*) ako=1 ;; *) ako=0 ;; esac
     res=$(printf '%s' "$order" | LV_AGENT_CONFIG_FILE="$AGENT_CONFIG_FILE" BU_CDP_URL="$CDP" "$py" "$PLACE_PY" prepare 2>> "$LOG") || true
     res=$(place_result "$res")
     state=$(json_field "$res" state); reason=$(json_field "$res" reason); detail=$(json_field "$res" detail)
     log "skrypt $slug $betId: prepare → ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}"
     case "$state" in
       ready)
-        if ! lv_api 15 claim "$betId" >> "$LOG" 2>&1; then
+        if ! lv_api_log 15 claim "$betId"; then
           log "skrypt $slug $betId: claim odrzucony — pomijam (powód w logu wyżej)"
           continue
         fi
@@ -904,35 +937,51 @@ fast_path() {
         state=$(json_field "$res" state); reason=$(json_field "$res" reason); detail=$(json_field "$res" detail)
         ticket=$(json_field "$res" ticketId); odds=$(json_field "$res" actualOdds); stake=$(json_field "$res" actualStake)
         before=$(json_field "$res" balanceBefore); after=$(json_field "$res" balanceAfter)
+        step=$(json_field "$res" step)
         log "skrypt $slug $betId: commit → ${state:-brak wyniku}${reason:+ ($reason)}${detail:+ — $detail}${ticket:+ kupon $ticket}"
         case "$state" in
           placed)
-            lv_api 20 placed "$betId" "${ticket:--}" "${odds:-null}" ${stake:+"$stake"} ${before:+"$before"} ${after:+"$after"} >> "$LOG" 2>&1 \
+            lv_api_log 20 placed "$betId" "${ticket:--}" "${odds:-null}" ${stake:+"$stake"} ${before:+"$before"} ${after:+"$after"} \
               || log "OSTRZEŻENIE: raport placed $betId nie przeszedł — sprawdź kupon ${ticket:-?} i dopnij: lv-api.sh attach"
             ;;
-          skipped) lv_api 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
-          failed|not_logged_in) lv_api 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+          skipped) lv_api_log 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
+          failed|not_logged_in) lv_api_log 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
           *)
-            # Claim jest już nasz, a zlecenie nie wróci do kolejki samo: oddaj je
-            # serwerowi kodem technicznym (wraca do kolejki od razu, licznik prób).
-            lv_api 15 failed "$betId" page_error "skrypt: ${reason:-brak wyniku} — ${detail:-}" >> "$LOG" 2>&1 || true
-            FAST_REMAINING=$((FAST_REMAINING + 1))
-            FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
+            if [ -z "$state" ] || [ "$reason" = "browser_error" ] || [ "$step" = "place" ] || [ "$step" = "ticket" ]; then
+              # Harness padł (timeout, crash) albo urwał się po kliknięciu „Postaw” —
+              # kupon MÓGŁ wejść. Kod przejściowy wróciłby zlecenie do kolejki i groził
+              # drugim kuponem; `unknown_after_click` = serwer czeka na weryfikację.
+              lv_api_log 15 failed "$betId" unknown_after_click "skrypt: ${reason:-brak wyniku} — ${detail:-} (krok ${step:-?})" || true
+              log "OSTRZEŻENIE: $betId ($slug) — wynik po kliknięciu nieznany, zlecenie czeka na weryfikację kuponu"
+            elif [ "$ako" = 1 ]; then
+              lv_api_log 15 failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}" || true
+            else
+              # Claim jest już nasz, a zlecenie nie wróci do kolejki samo: oddaj je
+              # serwerowi kodem technicznym (wraca do kolejki od razu, licznik prób).
+              lv_api_log 15 failed "$betId" page_error "skrypt: ${reason:-brak wyniku} — ${detail:-}" || true
+              FAST_REMAINING=$((FAST_REMAINING + 1))
+              FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
 "
+            fi
             ;;
         esac
         ;;
-      skipped) lv_api 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
-      failed) lv_api 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" >> "$LOG" 2>&1 || true ;;
+      skipped) lv_api_log 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
+      failed) lv_api_log 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
       not_logged_in)
         # Bramka logowania po stronie serwera: zlecenie wraca do kolejki bez próby,
         # a stan logowania tego konsumenta zamyka kolejkę buka do następnego raportu.
-        lv_api 15 session "$slug" logged_out "" not_logged_in "${detail:-skrypt nie widzi sesji}" >> "$LOG" 2>&1 || true
+        lv_api_log 15 session "$slug" logged_out "" not_logged_in "${detail:-skrypt nie widzi sesji}" || true
         ;;
       *)
-        FAST_REMAINING=$((FAST_REMAINING + 1))
-        FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
+        if [ "$ako" = 1 ]; then
+          # Przed claimem nic nie kliknięto: kod przejściowy, serwer ponowi (maks. 3 próby).
+          lv_api_log 15 failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}" || true
+        else
+          FAST_REMAINING=$((FAST_REMAINING + 1))
+          FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
 "
+        fi
         ;;
     esac
   done < <(printf '%s' "$queue" | "$py" -c '
@@ -942,7 +991,10 @@ for o in json.load(sys.stdin):
     tag = "%s (%s)" % (o.get("betId"), o.get("bookmaker"))
     if o.get("loginBlocked"): print("WAIT %s: loginBlocked" % tag); continue
     if o.get("authorizationLevel") == "confirm_each" and not o.get("userApproved"): print("WAIT %s: brak zgody użytkownika" % tag); continue
-    if o.get("bookmaker") not in ("sts", "superbet") or o.get("legs"): print("MODEL %s" % tag); continue
+    # Kupon AKO (taśma pewniaków) stawia tylko skrypt i tylko w STS — 10–15 nóg
+    # ręcznie to za duże ryzyko pomyłki; AKO gdzie indziej czeka na człowieka.
+    if o.get("legs") and o.get("bookmaker") != "sts": print("WAIT %s: kupon AKO poza STS — tylko ręcznie" % tag); continue
+    if o.get("bookmaker") not in ("sts", "superbet"): print("MODEL %s" % tag); continue
     print(json.dumps(o, ensure_ascii=False))
 ' 2>> "$LOG")
 }
@@ -980,7 +1032,9 @@ if ! pgrep -f "hermes chat" >/dev/null 2>&1; then
     kill $orphans 2>/dev/null || true
   fi
 fi
-log "kolejka: $ORDERS zleceń — budzę agenta (${LV_MODEL:-model domyślny Hermesa} @ ${LV_PROVIDER:-?})"
+# Model startuje dopiero po skrypcie i tylko dla zleceń, których skrypt nie umiał —
+# do 27.10 ta linia mówiła „budzę agenta" w każdym cyklu (2 278 razy na 13 sesji).
+log "kolejka: $ORDERS zleceń — start cyklu (najpierw skrypt, model tylko w razie potrzeby)"
 
 # --- przeglądarka + logowanie + cykl agenta ------------------------------------
 ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — cykl pominięty"; exit 1; }
@@ -1025,6 +1079,7 @@ MODEL_ARGS=()
 # Hermesa, a lv-api.sh świadomie nie czyta konfiguracji z dysku (skaner skilli
 # traktuje sięganie skilla do magazynu poświadczeń jak exfiltrację). Bez tego
 # agent zależałby od tego, czy Hermes sam eksportuje swój .env do narzędzi.
+log "budzę model (${LV_MODEL:-model domyślny Hermesa} @ ${LV_PROVIDER:-?}): zlecenia dla modelu $FAST_REMAINING"
 LV_EXECUTOR_TOKEN="$LV_EXECUTOR_TOKEN" LV_API_URL="$LV_API_URL" \
   "$HERMES_BIN" chat --toolsets skills,terminal,browser ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
   -q "Załaduj skill lv-executor (skill_view) i wykonaj zaległe zlecenia dokładnie wg jego procedury.$FAST_PROMPT" \

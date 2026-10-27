@@ -46,6 +46,9 @@ from pathlib import Path
 HERMES_HOME = Path(OS_ENV.get("HERMES_HOME") or (Path.home() / ".hermes"))
 DEFAULT_CDP = "http://localhost:9222"
 EXEC_TIMEOUT_S = 150
+# Kupon AKO: każda noga to wyszukiwarka + strona meczu + klik — 27.10 test 3 nóg na zimnej
+# przeglądarce trwał ~3 min, więc zapas 60 s na nogę (15 nóg ≈ 17 min, cykl nie ma limitu).
+AKO_LEG_TIMEOUT_S = 60
 BOOKMAKERS = ("sts", "superbet")
 # Zmienne o sekretnym kształcie nie wchodzą do harnessu — kod programu bywa logowany.
 SECRET_SHAPED = re.compile(r"(TOKEN|SECRET|PASSWORD|PASS|API_KEY|APIKEY|PRIVATE)", re.I)
@@ -141,6 +144,7 @@ GENERIC = {"fc", "cf", "sc", "ac", "afc", "bk", "ks", "mks", "gks", "rks", "club
 # po polsku (Bayern Monachium, Inter Mediolan), Superbet po niemiecku/angielsku
 # (Werder Bremen). 10.10: dwa event_not_found na STS z tego powodu.
 ALIAS_GROUPS = [
+    {"madrid", "madryt"},   # STS pisze "Real Madryt"; zlecenie niesie "Real Madrid CF" (24.10.2026)
     {"munchen", "munich", "monachium"}, {"milano", "milan", "mediolan"}, {"internazionale", "inter"},
     {"torino", "turin", "turyn"}, {"roma", "rome", "rzym"}, {"napoli", "naples", "neapol"},
     {"koln", "cologne", "kolonia"}, {"bremen", "brema"}, {"nurnberg", "nuremberg", "norymberga"},
@@ -308,7 +312,22 @@ def dismiss_overlays():
         elif text:
             click_by_text(text, "button, a, [role=button]")
 
-def open_page(url, ready_expr, timeout=20):
+def pump_frames(times=8, pause=0.6, ready_expr=None):
+    """Superbet wstawia karty rynków przez IntersectionObserver + requestAnimationFrame,
+    a w oknie agenta (bez fokusu) klatki nie powstają same: `.e2e-market` zostaje 0
+    i skrypt padał na event_page_not_rendered (24.10: 3 zlecenia oddane modelowi).
+    Zrzut ekranu zmusza kompozytor do klatki — playbook Superbet, Krok 3: 0 → 21 kart."""
+    for _ in range(times):
+        try:
+            cdp("Page.captureScreenshot", format="png", captureBeyondViewport=False)
+        except Exception:
+            pass
+        if ready_expr and js_bool(ready_expr):
+            return True
+        time.sleep(pause)
+    return bool(ready_expr) and js_bool(ready_expr)
+
+def open_page(url, ready_expr, timeout=20, pump=False):
     """goto → (czarna/zawieszona karta) reload → nowa karta. STS po nawigacji ze
     strony meczu na /szukaj potrafi zostać z czarnym ekranem bez DOM (17.09)."""
     for attempt in range(3):
@@ -323,6 +342,8 @@ def open_page(url, ready_expr, timeout=20):
         except Exception:
             pass
         dismiss_overlays()
+        if pump and pump_frames(ready_expr=ready_expr):
+            return True
         if wait_until(ready_expr, timeout):
             return True
     return False
@@ -348,10 +369,10 @@ def classify_error(txt):
         return ("failed", "not_logged_in")
     return None
 
-def wanted_selection():
-    """Rynek/wynik zlecenia → (rodzina, linia, strona). Rodzina: 1x2 | ou | corners | btts | inne."""
-    market = str(ORDER.get("market") or "")
-    outcome = str(ORDER.get("outcome") or "")
+def wanted_selection(market=None, outcome=None):
+    """Rynek/wynik zlecenia (albo nogi AKO) → (rodzina, linia, strona). Rodzina: 1x2 | ou | corners | btts | inne."""
+    market = str((ORDER.get("market") if market is None else market) or "")
+    outcome = str((ORDER.get("outcome") if outcome is None else outcome) or "")
     if market == "1x2":
         return ("1x2", None, {"home": "1", "draw": "X", "away": "2"}.get(outcome))
     m = re.fullmatch(r"ou(\d+)", market)
@@ -412,9 +433,10 @@ def sts_tile_href(home, away):
     return best_event_href('a[href*="/kursy/"]', home, away,
                            lambda h, t: "/kursy/" in h and "esport" not in t and "%28" not in h and "(" not in h)
 
-def sts_open_event():
+def sts_open_event(home=None, away=None):
     step("navigate")
-    home, away = ORDER.get("homeTeam", ""), ORDER.get("awayTeam", "")
+    home = ORDER.get("homeTeam", "") if home is None else home
+    away = ORDER.get("awayTeam", "") if away is None else away
     href = ""
     # Wyszukiwarka przez adres (/szukaj?s=<token>) — deterministyczna, bez pola i Enter
     # (playbook STS „Wyszukiwarka”, 6/6 meczów 24.09 i 10/10 09.10).
@@ -450,6 +472,16 @@ def sts_slip_legs():
     """Nogi na kuponie (bs-betslip-desktop). -1 = brak kuponu desktop (układ mobilny)."""
     n = js_val("(() => { const s = document.querySelector('bs-betslip-desktop'); return s ? s.querySelectorAll('bs-betslip-event').length : -1; })()")
     return int(n) if isinstance(n, (int, float)) else -1
+
+def sts_slip_events():
+    """Tekst każdej nogi kuponu (bs-betslip-event), znormalizowany — AKO sprawdza nogi po kolei."""
+    v = js_val("(() => { const s = document.querySelector('bs-betslip-desktop'); return s ? [...s.querySelectorAll('bs-betslip-event')].map(e => (e.innerText || '').replace(/\\s+/g, ' ')) : []; })()")
+    return [norm(t) for t in v] if isinstance(v, list) else []
+
+def sts_total_odds():
+    """„Kurs całkowity” z kuponu (AKO: iloczyn nóg liczony przez STS)."""
+    raw = js_str("(() => { const s = document.querySelector('bs-betslip-desktop'); const m = ((s ? s.innerText : '') || '').match(/Kurs ca\\u0142kowity\\s*([\\d\\s\\u00a0]*\\d[.,]\\d{2})/); return m ? m[1] : ''; })()")
+    return parse_amount(raw)
 
 def sts_slip_text():
     return js_str("(() => { const s = document.querySelector('bs-betslip-desktop'); return s ? s.innerText.replace(/\\s+/g, ' ').slice(0, 600) : ''; })()")
@@ -745,6 +777,120 @@ def sts_commit():
         print("LV_PLACE_RESULT " + json.dumps(res, ensure_ascii=False))
     return res
 
+# ---------------- STS: kupon AKO (taśma pewniaków) ----------------
+# Nogi ze zlecenia (`legs`: eventId, market, outcome, odds, homeTeam, awayTeam) dodawane
+# po kolei do JEDNEGO kuponu. AKO nigdy nie idzie do modelu (15 nóg ręcznie = za duże
+# ryzyko pomyłki przy prawdziwych pieniądzach): porażka techniczna → `failed` z kodem
+# przejściowym (serwer ponawia, max 3 próby), świadome pominięcie → `skipped`.
+
+def ako_legs():
+    legs = ORDER.get("legs")
+    return [l for l in legs if isinstance(l, dict)] if isinstance(legs, list) else []
+
+def ako_leg_tag(i, legs):
+    leg = legs[i]
+    return "noga %d/%d (%s – %s, %s/%s)" % (i + 1, len(legs), leg.get("homeTeam", "?"), leg.get("awayTeam", "?"),
+                                           leg.get("market", "?"), leg.get("outcome", "?"))
+
+def sts_ako_abort(state, reason, detail, before=None):
+    # Kupon nie może zostać z częścią nóg — następne zlecenie zbudowałoby na nim AKO.
+    sts_clear_slip()
+    return out(state, reason, detail, balanceBefore=before)
+
+def sts_slip_has_leg(home, away):
+    return any(text_has_team(t, home) and text_has_team(t, away) for t in sts_slip_events())
+
+def sts_prepare_ako():
+    legs = ako_legs()
+    picks = []
+    for i, leg in enumerate(legs):
+        family, dec, side = wanted_selection(leg.get("market"), leg.get("outcome"))
+        if family == "other" or (family in ("ou", "corners") and dec is None) or side is None:
+            return out("skipped", "unsupported_market", "%s poza skryptem" % ako_leg_tag(i, legs))
+        picks.append((family, dec, side))
+    if len(legs) < 2 or len({l.get("eventId") for l in legs}) != len(legs):
+        return out("skipped", "market_mismatch", "kupon AKO wymaga ≥ 2 nóg z różnych meczów (nóg: %d)" % len(legs))
+    sts_desktop_viewport()
+    before = None
+    shown = []
+    for i, leg in enumerate(legs):
+        family, dec, side = picks[i]
+        home, away = leg.get("homeTeam", ""), leg.get("awayTeam", "")
+        tag = ako_leg_tag(i, legs)
+        nav = sts_open_event(home, away)
+        if nav == "event_not_found":
+            return sts_ako_abort("failed", "event_not_found", "%s: wyszukiwarka STS bez kafla z obiema drużynami" % tag, before)
+        if nav:
+            return sts_ako_abort("failed", "navigation_failed", "%s: %s" % (tag, nav), before)
+        sts_desktop_viewport()
+        if i == 0:
+            step("login")
+            if not sts_logged_in() and os.environ.get("LV_PLACE_SKIP_LOGIN") != "1":
+                return out("not_logged_in", "not_logged_in", "brak Depozyt na stronie meczu")
+            before = sts_balance()
+            step("clear_slip")
+            if not wait_until("!!document.querySelector('bs-betslip-desktop')", 10):
+                return out("failed", "page_error", "brak kuponu bs-betslip-desktop po wymuszeniu okna 1400 px", balanceBefore=before)
+            if not sts_clear_slip():
+                return out("failed", "page_error", "kupon ma %s nóg z poprzednich biegów i nie dał się wyczyścić" % sts_slip_legs(), balanceBefore=before)
+        step("leg %d/%d market" % (i + 1, len(legs)))
+        found = sts_find_button(sts_market_header(family, dec), sts_button_pattern(family, dec, side))
+        if not isinstance(found, dict) or found.get("missing"):
+            if isinstance(found, dict) and found.get("missing") == "button":
+                labels = ", ".join(str(l) for l in (found.get("labels") or [])[:12])
+                return sts_ako_abort("skipped", "line_not_found", "%s: dostępne %s" % (tag, labels), before)
+            return sts_ako_abort("failed", "page_error", "%s: brak bloku rynku" % tag, before)
+        displayed = found.get("odds")
+        if displayed is None:
+            return sts_ako_abort("failed", "page_error", "%s: kurs nieczytelny (%s)" % (tag, found.get("label")), before)
+        step("leg %d/%d select" % (i + 1, len(legs)))
+        js_bool("(() => { const b = document.querySelector('[data-lv-pick=\"1\"]'); if (!b) return false; b.scrollIntoView({block: 'center'}); b.click(); return true; })()")
+        deadline = time.time() + 8
+        while time.time() < deadline and not (sts_slip_legs() == i + 1 and sts_slip_has_leg(home, away)):
+            time.sleep(0.4)
+        if not (sts_slip_legs() == i + 1 and sts_slip_has_leg(home, away)):
+            return sts_ako_abort("failed", "page_error", "%s: klik w %s — na kuponie %s nóg" % (tag, found.get("label"), sts_slip_legs()), before)
+        shown.append(displayed)
+    step("verify")
+    total = sts_total_odds()
+    product = 1.0
+    for o in shown:
+        product *= float(o)
+    if total is None:
+        total = round(product, 2)
+    # Bramka 2 % na kursie ŁĄCZNYM: pojedyncza noga może drgnąć, liczy się wypłata kuponu.
+    if not odds_ok(total, ORDER.get("odds")):
+        return sts_ako_abort("skipped", "odds_drift", "kurs łączny %s → %s (nogi: %s)" % (ORDER.get("odds"), total, ", ".join(str(o) for o in shown)), before)
+    step("stake")
+    if not sts_set_stake(ORDER.get("stake")):
+        if not sts_set_stake(ORDER.get("stake")):
+            return sts_ako_abort("failed", "page_error", "przycisk Postaw nie pokazuje %s zł (kupon AKO?)" % stake_text(ORDER.get("stake")), before)
+    if sts_slip_legs() != len(legs):
+        return sts_ako_abort("failed", "page_error", "nóg na kuponie %s zamiast %d" % (sts_slip_legs(), len(legs)), before)
+    return out("ready", None, None, actualOdds=total, actualStake=float(ORDER.get("stake")), balanceBefore=before,
+               slip=sts_slip_text(), legOdds=shown)
+
+def sts_commit_ako():
+    legs = ako_legs()
+    step("recheck")
+    sts_desktop_viewport()
+    if not sts_logged_in():
+        return out("not_logged_in", "not_logged_in", "sesja wygasła przed kliknięciem")
+    want = re.escape(stake_text(ORDER.get("stake")))
+    if not js_bool("/Postaw\\s+%s\\s*z/.test(document.body.innerText)" % want):
+        return sts_ako_abort("failed", "page_error", "przed kliknięciem przycisk nie pokazuje %s zł" % stake_text(ORDER.get("stake")))
+    if sts_slip_legs() != len(legs) or not all(sts_slip_has_leg(l.get("homeTeam", ""), l.get("awayTeam", "")) for l in legs):
+        return sts_ako_abort("failed", "page_error", "przed kliknięciem kupon nie jest naszym AKO (nóg: %s z %d)" % (sts_slip_legs(), len(legs)))
+    total = sts_total_odds()
+    if total is None or not odds_ok(total, ORDER.get("odds")):
+        return sts_ako_abort("skipped", "odds_drift", "kurs łączny %s → %s tuż przed kliknięciem" % (ORDER.get("odds"), total))
+    res = sts_place()
+    if res.get("state") == "placed":
+        res["actualOdds"] = total
+        res["actualStake"] = float(ORDER.get("stake"))
+        print("LV_PLACE_RESULT " + json.dumps(res, ensure_ascii=False))
+    return res
+
 # ---------------- Superbet ----------------
 SB_HOME = "https://superbet.pl"
 
@@ -792,7 +938,7 @@ def sb_open_event():
             break
     if not href:
         return "event_not_found"
-    if not open_page(href if href.startswith("http") else SB_HOME + href, "document.querySelectorAll('.e2e-market').length > 0", 25):
+    if not open_page(href if href.startswith("http") else SB_HOME + href, "document.querySelectorAll('.e2e-market').length > 0", 25, pump=True):
         return "event_page_not_rendered"
     # Drużyny z h1 („Legia Warszawa vs Wisła Kraków: Kursy i Zakłady”) — document.title
     # bywał samym „🐴 Superbet Polska” (19.09: fałszywe event_title_mismatch).
@@ -868,7 +1014,7 @@ def sb_find_odd(group_re, market_re, odd_re, side=None):
         # w ogóle nie są w DOM. Od 10.10 to .sds-tabs-secondary-item (stary pasek
         # .sds-filter-bar zniknął → fałszywe market_not_found dla rożnych).
         js_bool("(() => { const re = new RegExp(%s, 'i'); const b = [...document.querySelectorAll('.sds-tabs-secondary-item, .sds-filter-bar__filter-container button')].find(b => re.test((b.innerText || '').trim())); if (!b) return false; b.scrollIntoView({block: 'center', inline: 'center'}); b.click(); return true; })()" % json.dumps(group_re))
-        time.sleep(1.5)
+        pump_frames(times=4, pause=0.4)
     finder = """(() => {
       const mre = new RegExp(%s, 'i'); const ore = new RegExp(%s, 'i'); const side = %s;
       const vis = e => e.getBoundingClientRect().width > 0;
@@ -893,7 +1039,7 @@ def sb_find_odd(group_re, market_re, odd_re, side=None):
     for _ in range(3):
         res = js_val(finder)
         if isinstance(res, dict) and res.get("expanded"):
-            time.sleep(1.2)
+            pump_frames(times=3, pause=0.4)
             continue
         return res
     return {"missing": "odd", "names": []}
@@ -1074,7 +1220,9 @@ try:
     time.sleep(0.5)
 except Exception:
     pass
-if ORDER.get("legs"):
+if ORDER.get("legs") and SLUG == "sts":
+    sts_commit_ako() if PHASE == "commit" else sts_prepare_ako()
+elif ORDER.get("legs"):
     out("needs_model", "ako_unsupported", "kupon wielonogowy poza skryptem")
 elif SLUG == "sts":
     sts_commit() if PHASE == "commit" else sts_prepare()
@@ -1100,6 +1248,8 @@ def run_harness(order: dict, phase: str, cdp: str) -> tuple[list[dict], str]:
     env["LV_PLACE_PHASE"] = phase
     env["LV_PLACE_SHOT"] = str(HERMES_HOME / f"lv-place-{order.get('betId', 'x')}.png")
     env.setdefault("LV_AGENT_CONFIG_FILE", str(HERMES_HOME / "lv-agent-config.json"))
+    legs = order.get("legs")
+    timeout = EXEC_TIMEOUT_S + (AKO_LEG_TIMEOUT_S * len(legs) if isinstance(legs, list) else 0)
     try:
         proc = subprocess.run(
             cli,
@@ -1109,10 +1259,10 @@ def run_harness(order: dict, phase: str, cdp: str) -> tuple[list[dict], str]:
             encoding="utf-8",
             errors="replace",
             env=env,
-            timeout=EXEC_TIMEOUT_S,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return [], f"browser-use nie odpowiedział w {EXEC_TIMEOUT_S} s"
+        return [], f"browser-use nie odpowiedział w {timeout} s"
     except OSError as exc:
         return [], f"nie udało się uruchomić browser-use: {exc}"
     results: list[dict] = []
