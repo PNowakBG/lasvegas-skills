@@ -448,13 +448,24 @@ policy_logout_after_work() {
 # $1 = slugi oddzielone spacją. Pusta lista = nic do roboty: do 1.5.10 cykl
 # wylogowywał każdego buka z kolejki, także gdy logowanie było zablokowane — przy
 # 6 h blokadzie STS otwierał sts.pl co 5 minut tylko po to, żeby się wylogować.
+# Buki, którym sesję zostawiono, bo czekały zlecenia — wyloguje je cykl,
+# który zobaczy pustą kolejkę (kończy się wcześniej i inaczej nikt by tego nie zrobił).
+KEPT_SESSIONS="$HERMES_HOME/lv-kept-sessions"
 logout_bookmakers() {
-  local slug
+  local slug pending
   [ -n "$1" ] || return 0
+  # Wylogowanie tylko buka, u którego nie ma już nic do postawienia. Gdy zlecenia
+  # dalej czekają, sesja zostaje: każde logowanie od zera (STS czyści przy
+  # wylogowaniu dane strony) kończyło się captchą co 5 minut (właściciel, 02.11).
+  pending=$(queue_bookmakers "$(queue_json 2>/dev/null || echo '[]')")
   SESSION_POLICY=$(lv_api 10 session-policy 2>/dev/null) || SESSION_POLICY=""
   for slug in $1; do
-    if policy_logout_after_work "$slug"; then
+    if printf '%s\n' "$pending" | grep -qx "$slug"; then
+      log "$slug: w kolejce zostały zlecenia — sesja zostaje do następnego cyklu"
+      grep -qx "$slug" "$KEPT_SESSIONS" 2>/dev/null || echo "$slug" >> "$KEPT_SESSIONS"
+    elif policy_logout_after_work "$slug"; then
       logout_bookmaker "$slug" || true
+      sed -i.bak "/^$slug\$/d" "$KEPT_SESSIONS" 2>/dev/null && rm -f "$KEPT_SESSIONS.bak"
     else
       log "$slug: „Zamykaj sesję po pracy” wyłączone w LasVegas — sesja zostaje"
     fi
@@ -614,6 +625,32 @@ chrome_spawn() {
   return 0
 }
 
+# Okno agenta startuje od razu z kartami obu buków (zamiast pustego about:blank)
+# i ląduje na stałym workspace Hyprlanda, żeby nie wyskakiwało na bieżącym
+# (właściciel, 02.11). LV_CHROME_WORKSPACE="" wyłącza przenoszenie.
+STS_URL="https://www.sts.pl/"
+SUPERBET_URL="https://superbet.pl/"
+LV_CHROME_WORKSPACE="${LV_CHROME_WORKSPACE-4}"
+
+# Przeniesienie okna na workspace (tylko Hyprland). Okno pojawia się chwilę po
+# CDP, więc czekamy na nie do 15 s. Składnia dispatch zależy od konfiguracji:
+# klasyczna (hyprland.conf) albo Lua (hyprland.lua) — próbujemy obu.
+move_chrome_to_workspace() {
+  [ "$LV_OS" = "Linux" ] && [ -n "$LV_CHROME_WORKSPACE" ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || return 0
+  command -v hyprctl > /dev/null 2>&1 || return 0
+  local pid ws="$LV_CHROME_WORKSPACE" out
+  pid=$(pgrep -o -f -- "--user-data-dir=$PROFILE_DIR") || return 0
+  for _ in $(seq 1 15); do
+    hyprctl clients 2>/dev/null | grep -q "pid: $pid$" && break
+    sleep 1
+  done
+  out=$(hyprctl dispatch movetoworkspacesilent "$ws,pid:$pid" 2>&1)
+  [ "$out" = "ok" ] && return 0
+  out=$(hyprctl dispatch "hl.dsp.window.move({ workspace = \"$ws\", follow = false, window = \"pid:$pid\" })" 2>&1)
+  [ "$out" = "ok" ] || log "OSTRZEŻENIE: nie przeniosłem okna agenta na workspace $ws ($out)"
+  return 0
+}
+
 ensure_chrome() {
   cdp_alive && return 0
   log "startuję Chrome (profil $PROFILE_DIR) poza grupą procesów cyklu"
@@ -628,11 +665,14 @@ ensure_chrome() {
     --disable-renderer-backgrounding \
     --window-size=1400,900 \
     --proxy-pac-url="$PAC" \
-    about:blank || return 1
+    "$STS_URL" "$SUPERBET_URL" || return 1
   # Zimny start na 8 GB RAM bywa dłuższy niż 20 s (04:10–04:44 siedem cykli pod rząd
   # „CDP nie odpowiada") — czekamy do 60 s.
   for _ in $(seq 1 60); do
-    cdp_alive && return 0
+    if cdp_alive; then
+      move_chrome_to_workspace
+      return 0
+    fi
     sleep 1
   done
   log "BŁĄD: CDP :9222 nie odpowiada po 60 s"
@@ -1019,7 +1059,12 @@ date '+%F %T' > "$HEARTBEAT"
 [ -n "$LV_MODEL" ] || agent_config || true
 
 if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
-  exit 0   # pusta kolejka: nie budzimy ani LLM, ani przeglądarki
+  # Pusta kolejka: nie budzimy LLM. Przeglądarkę tylko wtedy, gdy trzeba
+  # zamknąć sesję zostawioną przy zleceniach z poprzednich cykli.
+  if [ -s "$KEPT_SESSIONS" ] && ensure_chrome; then
+    logout_bookmakers "$(tr '\n' ' ' < "$KEPT_SESSIONS")"
+  fi
+  exit 0
 fi
 ORDERS=$(printf '%s' "$QUEUE" | grep -o '"betId"' | wc -l | tr -d ' ')
 # Osierocone demony browser-use (ppid 1) z poprzednich sesji: browser-use leczy tylko
