@@ -84,7 +84,7 @@ cmd="${1:-help}"
 # Każda komenda poza pomocą wymaga tokenu. To sprawdzenie stoi na poziomie
 # WYKONANIA komendy, a nie w „auth_header" — powód w komentarzu przy nim.
 case "$cmd" in
-  orders|claim|placed|attach|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest|overlay)
+  orders|claim|placed|attach|failed|skipped|kill-switch|verifications|verify|status|agent-config|session|session-policy|digest|overlay|login-state)
     require_token
     ;;
 esac
@@ -264,6 +264,14 @@ else:
     # LasVegas (domyślnie tak: limit czasu gry). Cykl czyta to przed wylogowaniem.
     api_curl -H "$(auth_header)" "$BASE/session-policy"
     ;;
+  login-state)
+    # Stan logowania per buk razem z liczbą zleceń czekających w kolejce:
+    # `{"bookmakers":[{bookmaker, loginState, fresh, blocked, queued, needsLogin}]}`.
+    # Cykl pyta o to na starcie, żeby zalogować się, gdy są kupony do postawienia
+    # (`queued > 0 && needsLogin`) — także przy pustej lokalnie kolejce, gdzie
+    # `orders` nic nie pokaże i nikt nie zaraportowałby logowania.
+    api_curl -H "$(auth_header)" "$BASE/login-state"
+    ;;
   digest)
     # digest <sinceISO> — co TO urządzenie potwierdziło od podanej chwili
     # (postawione/pominięte/nieudane), z gotowymi polskimi liniami `line`.
@@ -315,6 +323,7 @@ lv-api.sh — API LasVegas dla egzekutora
   agent-config [meldunek]         model agenta z LasVegas (provider + model) — pyta o to cykl; meldunek = skill=…&os=…&creds=…&telegram=…
   attach <betId> <ticketId> <kurs> [stawka] [saldoPrzed] [saldoPo]   kupon wszedł, a „placed” dało 404 — dopnij dowód do zamkniętego zlecenia (nic nie stawia)
   session-policy                  czy po pracy wylogować się z buka (ustawienie z panelu bukmachera)
+  login-state                     stan logowania buków + ile zleceń czeka (cykl: kto wymaga logowania)
   overlay <buk> <opis> [selektor] [tekstPrzycisku] [click|remove|escape]   zgłoś okno, które trzeba było zamknąć (rejestr wspólny)
   digest <sinceISO>               podsumowanie potwierdzeń tego urządzenia od chwili (linie na Telegram)
   session <bookmaker> <logged_in|logged_out> [balance] [reason] [detail]   stan logowania u buka (Krok 0; bramka: superbet, sts; reason z lv-login.py)

@@ -67,9 +67,18 @@ w Chrome użytkownika ma własny, Ty własny. Bramka dotyczy sondowanych buków:
 **superbet** i **sts** (`betclic-pl` i `betfan` nie są sondowane; brak raportu
 = `unknown` też nie blokuje).
 
-Cykl (`lv-executor-cycle.sh`, macOS/Linux) loguje buki z kolejki ZANIM Cię
-obudzi i sam melduje `session`. Gdy mimo to widzisz `loginBlocked: true`
-(Windows bez cyklu, sesja wygasła w trakcie), dla każdego takiego buka uruchom:
+Cykl (`lv-executor-cycle.sh`, macOS/Linux) pyta serwer o stan logowania ZANIM
+Cię obudzi: `GET /executor/login-state` oddaje per buk `queued` (ile kuponów
+czeka w kolejce) i `needsLogin` (czy brakuje potwierdzonej, świeżej sesji TEGO
+komputera). Gdy `queued > 0 && needsLogin`, cykl loguje się sam z zapisanych
+poświadczeń i melduje `session` — także wtedy, gdy poll kolejki był pusty, bo
+wylogowanie potrafi ukryć zlecenia. Ty dostajesz tylko przypadki, których skrypt
+nie rozwiąże: captchę, kod SMS/2FA, brak lub złe poświadczenia — z powodem
+w powiadomieniu i w polu `reason`. Ciebie woła się więc wtedy, gdy w Kroku 0
+widzisz `loginBlocked: true` (Windows bez cyklu, sesja wygasła w trakcie), a nie
+po to, żebyś sprawdzał logowanie rutynowo.
+
+Gdy mimo to widzisz `loginBlocked: true`, dla każdego takiego buka uruchom:
 `python3 scripts/lv-login.py <slug>` (Windows: `python scripts\lv-login.py <slug>`).
 Skrypt sam sprawdza sesję i w razie potrzeby loguje z zapisanych poświadczeń;
 na stdout dostajesz JEDNĄ linię JSON — nigdy login ani hasło:

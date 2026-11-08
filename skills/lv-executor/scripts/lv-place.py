@@ -129,8 +129,17 @@ def wait_until(expr, timeout=15.0, poll=0.4):
 def body_text():
     return js_str("(document.body && document.body.innerText) ? document.body.innerText.slice(0, 40000) : ''")
 
+# ø, æ, ß, đ, œ, ı NIE rozkładają się w NFD na literę + znak diakrytyczny — zostawały
+# w tokenie i psuły wyszukiwarkę: „Bodø/Glimt” dawało token „bod” zamiast „bodo”
+# (02.11.2026: zlecenie AKO „FK Bodø/Glimt - Lille” padło na event_not_found).
+NORDIC_TRANSLATE = str.maketrans({
+    "ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "å": "a", "Å": "A", "ð": "d", "Ð": "D",
+    "þ": "th", "Þ": "Th", "ß": "ss", "đ": "d", "Đ": "D", "œ": "oe", "Œ": "OE", "ı": "i",
+})
+
 def norm(s):
-    s = unicodedata.normalize("NFD", str(s or ""))
+    s = str(s or "").translate(NORDIC_TRANSLATE)
+    s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     return s.lower().replace("ł", "l").strip()
 
@@ -144,6 +153,7 @@ GENERIC = {"fc", "cf", "sc", "ac", "afc", "bk", "ks", "mks", "gks", "rks", "club
 # po polsku (Bayern Monachium, Inter Mediolan), Superbet po niemiecku/angielsku
 # (Werder Bremen). 10.10: dwa event_not_found na STS z tego powodu.
 ALIAS_GROUPS = [
+    {"bodo", "bodoe"},      # „Bodø/Glimt” → norm „bodo” (ø→o), ale bywa pisane „Bodoe” (02.11.2026)
     {"madrid", "madryt"},   # STS pisze "Real Madryt"; zlecenie niesie "Real Madrid CF" (24.10.2026)
     {"munchen", "munich", "monachium"}, {"milano", "milan", "mediolan"}, {"internazionale", "inter"},
     {"torino", "turin", "turyn"}, {"roma", "rome", "rzym"}, {"napoli", "naples", "neapol"},

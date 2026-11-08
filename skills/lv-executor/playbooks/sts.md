@@ -1,5 +1,5 @@
 # Playbook: STS (sts.pl)
-updated: 2026-10-24   verified: yes   failures: 4
+updated: 2026-11-08   verified: yes   failures: 4
 
 Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP :9222).
 Ponownie sprawdzony na zywych zleceniach 2026-09-24 (Puchar Polski) - patrz "Log napraw".
@@ -315,6 +315,15 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
 - Nie klikaj `Postaw` dwa razy — po kliknięciu czekaj na ekran potwierdzenia.
 
 ## Log napraw
+
+- **2026-11-02 (taśmy AKO, `FK Bodø/Glimt` - `Lille` — `event_not_found` przez `ø`; naprawa w `lv-place.py`).**
+  Wyszukiwarka STS nie zwróciła kafla, bo `norm()` puszczał `ø` przez NFD, a `ø` nie ma
+  rozkładu na literę + znak diakrytyczny — token z `Bodø/Glimt` wychodził jako `bod`
+  zamiast `bodo`, a `/szukaj?s=bod` nie trafia w mecz. Poprawka: `norm()` robi teraz
+  `str.translate` PRZED NFD (`ø`→`o`, `æ`→`ae`, `å`→`a`, `ð`→`d`, `þ`→`th`, `ß`→`ss`,
+  `đ`→`d`, `œ`→`oe`, `ı`→`i`, zachowane `ł`→`l`), a `ALIAS_GROUPS` ma parę
+  `{"bodo", "bodoe"}`. Tokeny z `Bodø/Glimt` to teraz `bodo`/`glimt` (a nie `bod`),
+  więc kafel `Bodo/Glimt` i `Bodoe/Glimt` pasuje tą samą ścieżką co reszta lig.
 
 - **2026-10-24 (bieg manualny, zlecenie `621329b6` wróciło z kolejki — rozstrzygnięte `skipped odds_drift`, raport DOSTARCZONY).**
   Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95, stawka 31.42)

@@ -393,11 +393,44 @@ queue_bookmakers() {
     | sed 's/.*"\([a-z0-9-]*\)"$/\1/' | sort -u | grep -E '^(sts|superbet)$' || true
 }
 
+# Buki, które wg serwera mają ZLECENIA w kolejce, a TEGO urządzenia dotyczy
+# blokada logowania (`queued > 0 && needsLogin` — `GET /executor/login-state`).
+# Pusta lokalnie kolejka kończy bieg przed logowaniem, więc bez tego pytania
+# wylogowany buk z czekającymi kuponami nie zostałby zalogowany (produkcja
+# 02.11: STS wylogowany, taśmy czekały). Błąd albo 404 (starszy serwer) =
+# cicho pusta lista — zachowanie jak przed zmianą.
+login_state_slugs() {
+  local json py
+  json=$(lv_api 15 login-state 2>/dev/null) || return 0
+  py=$(python_bin) || return 0
+  printf '%s' "$json" | "$py" -c '
+import json, sys
+try:
+    entries = json.load(sys.stdin).get("bookmakers")
+except Exception:
+    entries = None
+if not isinstance(entries, list):
+    entries = []
+seen = []
+for e in entries:
+    if not isinstance(e, dict) or e.get("needsLogin") is not True:
+        continue
+    slug = e.get("bookmaker")
+    queued = e.get("queued")
+    if isinstance(slug, str) and isinstance(queued, (int, float)) and queued > 0 and slug not in seen:
+        seen.append(slug)
+print("\n".join(seen))' 2>/dev/null | grep -E '^(sts|superbet)$' || true
+}
+
 # Buki zalogowane w TYM cyklu (lista slugów) — tylko je wylogowuje szybka ścieżka.
 CYCLE_LOGINS=""
 ensure_logins() {
-  local slug
-  for slug in $(queue_bookmakers "$1"); do
+  local slug slugs
+  # Kolejka + `login-state`: serwer wie też o kuponach, których poll nie pokazał.
+  slugs=$(printf '%s\n%s\n' "$(queue_bookmakers "$1")" "$LOGIN_STATE_SLUGS" | sort -u | grep . || true)
+  for slug in $slugs; do
+    # Zalogowany już w tym cyklu (ścieżka pustej kolejki) — bez drugiego otwarcia.
+    case " $CYCLE_LOGINS " in *" $slug "*) continue ;; esac
     if login_blocked "$slug"; then
       if [ "$LOGIN_BLOCK_REASON" = "browser_error" ]; then
         log "pomijam logowanie $slug: przeglądarka nie odpowiadała $LOGIN_BLOCK_AGE_MIN min temu — ponowna próba po $((LOGIN_BLOCK_TTL_BROWSER / 60)) min"
@@ -1051,6 +1084,12 @@ if ! QUEUE=$(queue_json); then
 fi
 date '+%F %T' > "$HEARTBEAT"
 
+# Gotowość logowania z serwera (GET /executor/login-state) — ZANIM zdecydujemy,
+# czy jest co robić. `queued > 0 && needsLogin` znaczy „kupony czekają, a ten
+# komputer nie ma potwierdzonej sesji": logujemy się nawet przy pustej lokalnie
+# kolejce, bo bez tego zlecenia stoją do najbliższego ręcznego logowania.
+LOGIN_STATE_SLUGS=$(login_state_slugs)
+
 # Model pytamy ZAWSZE — także przy pustej kolejce. To jedno małe żądanie, a
 # pieczątka z niego jest jedynym sygnałem, po którym LasVegas odróżnia agenta
 # aktualnego od starszej generacji. Bez tego urządzenie, które nie ma zleceń,
@@ -1060,11 +1099,26 @@ date '+%F %T' > "$HEARTBEAT"
 
 if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
   # Pusta kolejka: nie budzimy LLM. Przeglądarkę tylko wtedy, gdy trzeba
-  # zamknąć sesję zostawioną przy zleceniach z poprzednich cykli.
-  if [ -s "$KEPT_SESSIONS" ] && ensure_chrome; then
-    logout_bookmakers "$(tr '\n' ' ' < "$KEPT_SESSIONS")"
+  # zamknąć sesję zostawioną przy zleceniach z poprzednich cykli, albo gdy
+  # serwer widzi kupony w kolejce wymagające zalogowania — wtedy logujemy się
+  # i pytamy o kolejkę jeszcze raz (bramka logowania mogła ją ukryć).
+  if [ -n "$LOGIN_STATE_SLUGS" ] && ensure_chrome; then
+    ensure_logins ""
+    QUEUE=$(queue_json) || { log "OSTRZEŻENIE: nie odświeżono kolejki po logowaniu"; QUEUE="[]"; }
   fi
-  exit 0
+  if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
+    # Po logowaniu nadal brak widocznych zleceń: zamykamy sesję otwartą w tym
+    # cyklu (login-state widział kupony, których ten konsument nie dostanie),
+    # żeby nie trzymała się do końca dnia i nie zjadała limitu czasu gry.
+    if [ -n "$CYCLE_LOGINS" ]; then
+      logout_bookmakers "$CYCLE_LOGINS"
+    fi
+    # Sesje zostawione przy zleceniach z poprzednich cykli — jak dotąd.
+    if [ -s "$KEPT_SESSIONS" ] && ensure_chrome; then
+      logout_bookmakers "$(tr '\n' ' ' < "$KEPT_SESSIONS")"
+    fi
+    exit 0
+  fi
 fi
 ORDERS=$(printf '%s' "$QUEUE" | grep -o '"betId"' | wc -l | tr -d ' ')
 # Osierocone demony browser-use (ppid 1) z poprzednich sesji: browser-use leczy tylko
