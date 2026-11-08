@@ -120,6 +120,18 @@ lv_api_log() {
   return "$rc"
 }
 
+# Raport wyniku jest terminalny: jeśli API go nie przyjmie, zlecenie zostaje
+# w kolejce i wróci w następnym cyklu. Wcześniej `|| true` całkowicie ukrywał
+# taką awarię — 08.11 `skipped odds_drift` wyglądało na zamknięte lokalnie,
+# a w bazie zlecenie dalej było `queued`. Przy błędzie zostawiamy ślad w logu.
+report_or_warn() {
+  local label="$1"
+  shift
+  if ! lv_api_log 15 "$@"; then
+    log "OSTRZEŻENIE: raport $label nie przeszedł — zlecenie może wrócić do kolejki (odpowiedź API wyżej)"
+  fi
+}
+
 # 0, gdy wersja $1 jest NOWSZA niż $2 (kropkowe, porównanie numeryczne).
 # awk zamiast „sort -V", którego nie ma w każdym sort na macOS.
 version_gt() {
@@ -1017,21 +1029,21 @@ fast_path() {
             lv_api_log 20 placed "$betId" "${ticket:--}" "${odds:-null}" ${stake:+"$stake"} ${before:+"$before"} ${after:+"$after"} \
               || log "OSTRZEŻENIE: raport placed $betId nie przeszedł — sprawdź kupon ${ticket:-?} i dopnij: lv-api.sh attach"
             ;;
-          skipped) lv_api_log 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
-          failed|not_logged_in) lv_api_log 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
+          skipped) report_or_warn "skipped $betId" skipped "$betId" "${reason:-ui_error}" "${detail:-}" ;;
+          failed|not_logged_in) report_or_warn "failed $betId" failed "$betId" "${reason:-ui_error}" "${detail:-}" ;;
           *)
             if [ -z "$state" ] || [ "$reason" = "browser_error" ] || [ "$step" = "place" ] || [ "$step" = "ticket" ]; then
               # Harness padł (timeout, crash) albo urwał się po kliknięciu „Postaw” —
               # kupon MÓGŁ wejść. Kod przejściowy wróciłby zlecenie do kolejki i groził
               # drugim kuponem; `unknown_after_click` = serwer czeka na weryfikację.
-              lv_api_log 15 failed "$betId" unknown_after_click "skrypt: ${reason:-brak wyniku} — ${detail:-} (krok ${step:-?})" || true
+              report_or_warn "failed $betId (unknown_after_click)" failed "$betId" unknown_after_click "skrypt: ${reason:-brak wyniku} — ${detail:-} (krok ${step:-?})"
               log "OSTRZEŻENIE: $betId ($slug) — wynik po kliknięciu nieznany, zlecenie czeka na weryfikację kuponu"
             elif [ "$ako" = 1 ]; then
-              lv_api_log 15 failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}" || true
+              report_or_warn "failed $betId (page_error AKO)" failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}"
             else
               # Claim jest już nasz, a zlecenie nie wróci do kolejki samo: oddaj je
               # serwerowi kodem technicznym (wraca do kolejki od razu, licznik prób).
-              lv_api_log 15 failed "$betId" page_error "skrypt: ${reason:-brak wyniku} — ${detail:-}" || true
+              report_or_warn "failed $betId (page_error)" failed "$betId" page_error "skrypt: ${reason:-brak wyniku} — ${detail:-}"
               FAST_REMAINING=$((FAST_REMAINING + 1))
               FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}
 "
@@ -1039,17 +1051,17 @@ fast_path() {
             ;;
         esac
         ;;
-      skipped) lv_api_log 15 skipped "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
-      failed) lv_api_log 15 failed "$betId" "${reason:-ui_error}" "${detail:-}" || true ;;
+      skipped) report_or_warn "skipped $betId" skipped "$betId" "${reason:-ui_error}" "${detail:-}" ;;
+      failed) report_or_warn "failed $betId" failed "$betId" "${reason:-ui_error}" "${detail:-}" ;;
       not_logged_in)
         # Bramka logowania po stronie serwera: zlecenie wraca do kolejki bez próby,
         # a stan logowania tego konsumenta zamyka kolejkę buka do następnego raportu.
-        lv_api_log 15 session "$slug" logged_out "" not_logged_in "${detail:-skrypt nie widzi sesji}" || true
+        report_or_warn "session logged_out $slug" session "$slug" logged_out "" not_logged_in "${detail:-skrypt nie widzi sesji}"
         ;;
       *)
         if [ "$ako" = 1 ]; then
           # Przed claimem nic nie kliknięto: kod przejściowy, serwer ponowi (maks. 3 próby).
-          lv_api_log 15 failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}" || true
+          report_or_warn "failed $betId (page_error AKO)" failed "$betId" page_error "skrypt AKO: ${reason:-brak wyniku} — ${detail:-}"
         else
           FAST_REMAINING=$((FAST_REMAINING + 1))
           FAST_NOTES="${FAST_NOTES}- $betId ($slug): ${reason:-brak wyniku} — ${detail:-}

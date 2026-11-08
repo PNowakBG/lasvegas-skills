@@ -80,13 +80,18 @@ def find_browser_use() -> list[str] | None:
 
 # --- Program wykonywany w harnessie browser-use (helpers: goto_url, js, fill_input, …) ---
 HARNESS_PROGRAM = r'''
-import json, os, re, time, unicodedata
+import json, os, re, sys, time, unicodedata
+
+_skill_dir = os.environ.get("LV_SKILL_DIR")
+if _skill_dir:
+    sys.path.insert(0, _skill_dir)
 
 ORDER = json.loads(os.environ.get("LV_PLACE_ORDER", "{}"))
 PHASE = os.environ.get("LV_PLACE_PHASE", "prepare")
 SHOT = os.environ.get("LV_PLACE_SHOT", "")
 SLUG = str(ORDER.get("bookmaker", ""))
 STEP = "start"
+SEARCH_TRACE = []
 
 def out(state, reason=None, detail=None, **extra):
     res = {"betId": ORDER.get("betId"), "bookmaker": SLUG, "state": state, "reason": reason,
@@ -129,117 +134,17 @@ def wait_until(expr, timeout=15.0, poll=0.4):
 def body_text():
     return js_str("(document.body && document.body.innerText) ? document.body.innerText.slice(0, 40000) : ''")
 
-# ø, æ, ß, đ, œ, ı NIE rozkładają się w NFD na literę + znak diakrytyczny — zostawały
-# w tokenie i psuły wyszukiwarkę: „Bodø/Glimt” dawało token „bod” zamiast „bodo”
-# (02.11.2026: zlecenie AKO „FK Bodø/Glimt - Lille” padło na event_not_found).
-NORDIC_TRANSLATE = str.maketrans({
-    "ø": "o", "Ø": "O", "æ": "ae", "Æ": "AE", "å": "a", "Å": "A", "ð": "d", "Ð": "D",
-    "þ": "th", "Þ": "Th", "ß": "ss", "đ": "d", "Đ": "D", "œ": "oe", "Œ": "OE", "ı": "i",
-})
-
-def norm(s):
-    s = str(s or "").translate(NORDIC_TRANSLATE)
-    s = unicodedata.normalize("NFD", s)
-    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-    return s.lower().replace("ł", "l").strip()
-
-GENERIC = {"fc", "cf", "sc", "ac", "afc", "bk", "ks", "mks", "gks", "rks", "club", "clube", "sport", "sporting",
-           "athletic", "atletico", "united", "city", "town", "real", "de", "la", "el", "the", "kobiety", "women",
-           "balompie", "tc", "sk", "fk", "ii", "b", "u19", "u21", "u23", "ii.", "calcio", "futbol", "fussball",
-           "football", "sv", "vfb", "vfl", "tsg", "ssc", "as", "us", "ss", "rc", "rcd", "cd", "ud", "sd", "ca",
-           "if", "ik", "nk", "hnk", "osc", "ogc", "stade", "olympique", "racing", "deportivo", "utd"}
-
-# Nazwy w bazie są oryginalne (FC Bayern München, FC Internazionale Milano), STS pisze
-# po polsku (Bayern Monachium, Inter Mediolan), Superbet po niemiecku/angielsku
-# (Werder Bremen). 10.10: dwa event_not_found na STS z tego powodu.
-ALIAS_GROUPS = [
-    {"bodo", "bodoe"},      # „Bodø/Glimt” → norm „bodo” (ø→o), ale bywa pisane „Bodoe” (02.11.2026)
-    {"madrid", "madryt"},   # STS pisze "Real Madryt"; zlecenie niesie "Real Madrid CF" (24.10.2026)
-    {"munchen", "munich", "monachium"}, {"milano", "milan", "mediolan"}, {"internazionale", "inter"},
-    {"torino", "turin", "turyn"}, {"roma", "rome", "rzym"}, {"napoli", "naples", "neapol"},
-    {"koln", "cologne", "kolonia"}, {"bremen", "brema"}, {"nurnberg", "nuremberg", "norymberga"},
-    {"hannover", "hanower"}, {"lisboa", "lisbon", "lizbona"}, {"praha", "prague", "praga"},
-    {"wien", "vienna", "wieden"}, {"london", "londyn"}, {"kobenhavn", "copenhagen", "kopenhaga"},
-    {"moskva", "moscow", "moskwa"}, {"beograd", "belgrade", "belgrad"}, {"bucuresti", "bucharest", "bukareszt"},
-    {"brugge", "bruges", "brugia"}, {"venezia", "venice", "wenecja"}, {"firenze", "florence", "florencja"},
-    {"genova", "genoa", "genua"}, {"sevilla", "seville", "sewilla"}, {"mallorca", "majorka"},
-    {"athens", "ateny"}, {"kyiv", "kiev", "kijow"}, {"warszawa", "warsaw"}, {"krakow", "cracow"},
-    {"marseille", "marsylia"}, {"paris", "paryz"}, {"zurich", "zurych"}, {"geneve", "geneva", "genewa"},
-    {"basel", "bazylea"}, {"antwerpen", "antwerp", "antwerpia"}, {"dinamo", "dynamo"},
-    {"monchengladbach", "gladbach"}, {"nottingham", "nottm"},
-]
-ALIASES = {t: g for g in ALIAS_GROUPS for t in g}
-
-def words_of(text):
-    return set(re.split(r"[^a-z0-9]+", norm(text)))
-
-def key_tokens(team):
-    raw = [t for t in re.split(r"[^a-z0-9]+", norm(team)) if t]
-    toks = [t for t in raw if len(t) >= 3 and t not in GENERIC and not t.isdigit()]
-    if not toks:
-        toks = [t for t in raw if len(t) >= 2 and not t.isdigit()]
-    return toks
-
-def variants(token):
-    return ALIASES.get(token, {token})
-
-def team_position(text, team):
-    """Indeks w tekście, gdzie stoi PIERWSZE charakterystyczne słowo drużyny (z odmianami
-    nazw miast), jako CAŁY wyraz; -1 = brak. Pierwsze, nie najdłuższe: to tożsamość
-    klubu (Legia, Inter, Bayern, Parma) — „Warszawa” pasowałaby też do Polonii."""
-    toks = key_tokens(team)
-    if not toks:
-        return -1
-    t = norm(text)
-    best = -1
-    for v in variants(toks[0]):
-        m = re.search(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(v), t)
-        if m and (best < 0 or m.start() < best):
-            best = m.start()
-    return best
-
-def text_has_team(text, team):
-    return team_position(text, team) >= 0
-
-# Drużyny młodzieżowe, rezerwy, kobiety: kafel z takim znacznikiem pasuje po nazwach
-# do meczu seniorów (09.10: „warszawa” + „krakow” → Escola Varsovia Warszawa U19 –
-# Wisła Kraków U19 zamiast Legia – Wisła). Znacznik musi być też w zleceniu.
-SQUAD_MARKERS = {"u16", "u17", "u18", "u19", "u20", "u21", "u22", "u23", "ii", "iii", "kobiety", "women", "ladies", "rezerwy"}
-
-def squad_markers(text):
-    toks = set(re.split(r"[^a-z0-9]+", norm(text)))
-    found = toks & SQUAD_MARKERS
-    if "[k]" in norm(text) or "(k)" in norm(text):
-        found.add("kobiety")
-    return found
-
-def team_coverage(text, home, away):
-    """Ile słów kluczowych OBU drużyn jest w tekście; 0 = brak pierwszego słowa którejś
-    drużyny, gospodarz za gościem (inny mecz: rewanż) albo obcy znacznik U19/II/kobiet."""
-    ph, pa = team_position(text, home), team_position(text, away)
-    if ph < 0 or pa < 0 or (ph > pa and key_tokens(home)[:1] != key_tokens(away)[:1]):
-        return 0
-    if squad_markers(text) - squad_markers(home + " " + away):
-        return 0
-    words = words_of(text)
-    return sum(1 for t in key_tokens(home) + key_tokens(away) if variants(t) & words)
-
-def search_queries(home, away):
-    """Pierwsze słowo gospodarza i gościa z odmianami nazw miast („internazionale” →
-    też „inter”), potem najdłuższe — wyszukiwarki buków nie lubią pełnych nazw („RCD
-    Espanyol” zwraca pustkę, „espanyol” działa). Najwyżej 4 zapytania."""
-    out = []
-    for team in (home, away):
-        toks = key_tokens(team)
-        if toks:
-            for v in [toks[0]] + sorted(variants(toks[0]) - {toks[0]}):
-                if v not in out:
-                    out.append(v)
-    for team in (home, away):
-        toks = sorted(key_tokens(team), key=len, reverse=True)
-        if toks and toks[0] not in out:
-            out.append(toks[0])
-    return out[:4] or [home]
+# Czyste dopasowanie nazw żyje w lv_match.py — testy jednostkowe nie potrzebują
+# przeglądarki. LV_SKILL_DIR ustawia run_harness (katalog scripts/).
+from lv_match import (
+    classify_search_failure,
+    norm,
+    pick_best_tile,
+    search_queries,
+    search_trace_summary,
+    team_coverage,
+    text_has_team,
+)
 
 def decode_line(digits):
     """ou25 → ("2.5", True) ; ou2 → ("2", False) ; corners_ou105 → ("10.5", True). None = nieznany klucz."""
@@ -423,34 +328,42 @@ def sts_desktop_viewport():
         pass
     time.sleep(0.5)
 
-def best_event_href(selector, home, away, href_ok):
-    """Kafel wyniku wyszukiwania z największym pokryciem nazw OBU drużyn (team_coverage)."""
-    tiles = js_val("[...document.querySelectorAll(%s)].map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})).slice(0, 40)" % json.dumps(selector)) or []
-    best, best_score = "", 0
-    for t in tiles:
-        href = t.get("href", "")
-        text = norm(t.get("text", "") + " " + href.replace("-", " "))
-        if not href_ok(href, text):
-            continue
-        score = team_coverage(text, home, away)
-        if score > best_score:
-            best, best_score = href, score
-    return best
+STS_TILE_SELECTOR = 'a[href*="/kursy/"]'
+STS_TILE_LIMIT = 80
 
-def sts_tile_href(home, away):
+def sts_tile_ok(href, text):
     # Esporty („B Dortmund (Bjela)”) też pasują po nazwach drużyn: nawias w adresie
     # albo „Esports” w kaflu. 09.10 `s=dortmund` dał 7 esportów przed Borussią.
-    return best_event_href('a[href*="/kursy/"]', home, away,
-                           lambda h, t: "/kursy/" in h and "esport" not in t and "%28" not in h and "(" not in h)
+    return "/kursy/" in href and "esport" not in text and "%28" not in href and "(" not in href
+
+def search_tiles(selector, limit):
+    expr = ("[...document.querySelectorAll(%s)].slice(0, %d)"
+            ".map(a => ({href: a.getAttribute('href') || '', text: (a.innerText || '').replace(/\\s+/g, ' ')})"
+            ) % (json.dumps(selector), limit)
+    return js_val(expr) or []
+
+def best_event_href(selector, home, away, href_ok, tiles=None, limit=STS_TILE_LIMIT):
+    """Kafel wyniku z największym pokryciem nazw OBU drużyn (team_coverage)."""
+    if tiles is None:
+        tiles = search_tiles(selector, limit)
+    href, _ = pick_best_tile(tiles, home, away, href_ok)
+    return href
+
+def sts_tile_href(home, away, tiles=None):
+    return best_event_href(STS_TILE_SELECTOR, home, away, sts_tile_ok, tiles=tiles)
 
 def sts_open_event(home=None, away=None):
+    global SEARCH_TRACE
     step("navigate")
     home = ORDER.get("homeTeam", "") if home is None else home
     away = ORDER.get("awayTeam", "") if away is None else away
+    SEARCH_TRACE = []
     href = ""
     # Wyszukiwarka przez adres (/szukaj?s=<token>) — deterministyczna, bez pola i Enter
     # (playbook STS „Wyszukiwarka”, 6/6 meczów 24.09 i 10/10 09.10).
     for query in search_queries(home, away):
+        last_tiles = 0
+        last_score = 0
         try:
             goto_url(STS_HOME + "/szukaj?s=" + query)
             wait_for_load(20)
@@ -459,12 +372,17 @@ def sts_open_event(home=None, away=None):
         dismiss_overlays()
         deadline = time.time() + 12
         while time.time() < deadline and not href:
-            href = sts_tile_href(home, away)
+            tiles = search_tiles(STS_TILE_SELECTOR, STS_TILE_LIMIT)
+            last_tiles = len(tiles)
+            href, last_score = pick_best_tile(tiles, home, away, sts_tile_ok)
+            if not href and last_tiles > 0:
+                # Kafle są, ale żaden nie pasuje — dajemy 6 s na doczytanie listy
+                # (wcześniej 3 s ucinało wolne renderowanie i fałszywie kończyło
+                # zapytanie). Dopiero potem następne słowo.
+                deadline = min(deadline, time.time() + 6)
             if not href:
-                # Kafle są, ale żaden nie pasuje — po 3 s następne słowo, nie 12 s.
-                if js_bool("document.querySelectorAll('a[href*=kursy]').length > 0"):
-                    deadline = min(deadline, time.time() + 3)
                 time.sleep(0.6)
+        SEARCH_TRACE.append({"query": query, "tiles": last_tiles, "score": last_score})
         if href:
             break
     if not href:
@@ -714,7 +632,7 @@ def sts_prepare():
     sts_desktop_viewport()
     nav = sts_open_event()
     if nav == "event_not_found":
-        return out("needs_model", "event_not_found", "wyszukiwarka STS nie zwróciła kafla z obiema drużynami")
+        return out("needs_model", "event_not_found", "wyszukiwarka STS nie zwróciła kafla z obiema drużynami (%s)" % search_trace_summary(SEARCH_TRACE))
     if nav:
         return out("needs_model", "navigation_failed", nav)
     # open_page bywa zmuszony do nowej karty — emulacja okna jest per karta.
@@ -829,7 +747,16 @@ def sts_prepare_ako():
         tag = ako_leg_tag(i, legs)
         nav = sts_open_event(home, away)
         if nav == "event_not_found":
-            return sts_ako_abort("failed", "event_not_found", "%s: wyszukiwarka STS bez kafla z obiema drużynami" % tag, before)
+            trace = search_trace_summary(SEARCH_TRACE)
+            # Kafle są, ale żaden nie pasuje → niemal na pewno meczu nie ma w
+            # ofercie STS. To NIE jest błąd techniczny: nie retryujemy całego
+            # kuponu 3 razy. Brak jakichkolwiek kafli = problem z ładowaniem
+            # wyszukiwarki, więc zostaje retryowalny `failed`.
+            state, reason = classify_search_failure(SEARCH_TRACE)
+            return sts_ako_abort(
+                state, reason,
+                "%s: %s (%s)" % (tag, "STS nie ma meczu w ofercie" if state == "skipped"
+                                 else "wyszukiwarka STS nie zwróciła kafli", trace), before)
         if nav:
             return sts_ako_abort("failed", "navigation_failed", "%s: %s" % (tag, nav), before)
         sts_desktop_viewport()
@@ -1043,7 +970,7 @@ def sb_find_odd(group_re, market_re, odd_re, side=None):
       const val = ((odds[idx].querySelector('.e2e-odd-value') || {}).innerText || '').trim();
       const btn = odds[idx].querySelector('button') || odds[idx];
       btn.setAttribute('data-lv-pick', '1');
-      const ariaOdds = (btn.getAttribute('aria-label') || '').match(/współczynnik\s+(\d+[.,]\d+)/);
+      const ariaOdds = (btn.getAttribute('aria-label') || '').match(/współczynnik\\s+(\\d+[.,]\\d+)/);
       return {label: labels[idx].replace(/, współczynnik.*$/, ''), odds: parseFloat((val || (ariaOdds ? ariaOdds[1] : '')).replace(',', '.'))};
     })()""" % (json.dumps(market_re), json.dumps(odd_re), json.dumps(side))
     for _ in range(3):
@@ -1257,6 +1184,7 @@ def run_harness(order: dict, phase: str, cdp: str) -> tuple[list[dict], str]:
     env["LV_PLACE_ORDER"] = json.dumps(order, ensure_ascii=False)
     env["LV_PLACE_PHASE"] = phase
     env["LV_PLACE_SHOT"] = str(HERMES_HOME / f"lv-place-{order.get('betId', 'x')}.png")
+    env["LV_SKILL_DIR"] = str(Path(__file__).resolve().parent)
     env.setdefault("LV_AGENT_CONFIG_FILE", str(HERMES_HOME / "lv-agent-config.json"))
     legs = order.get("legs")
     timeout = EXEC_TIMEOUT_S + (AKO_LEG_TIMEOUT_S * len(legs) if isinstance(legs, list) else 0)

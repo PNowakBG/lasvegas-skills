@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.17
+version: 1.5.24
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -117,6 +117,10 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    stawia wyłącznie skrypt, i tylko w STS — `lv-api.sh orders` nie pokazuje Ci jej
    wcale. Gdy mimo to trafisz na takie zlecenie, pomiń je bez claimu i bez raportu.
    Wolno Ci za to ROZSTRZYGNĄĆ jego weryfikację (Krok 0): to tylko odczyt kuponów.
+   Skrypt rozróżnia brak meczu w ofercie od awarii wyszukiwarki: gdy kafle są,
+   ale żaden nie pasuje, raportuje `skipped bookmaker_not_offering` (bez retry);
+   gdy nie ma żadnych kafli — `failed event_not_found` (retry). W szczególe są
+   zapytania i liczba kafli, więc w logu widać, czego szukał.
 3. **Claim.** `bash scripts/lv-api.sh claim <betId>` — każdy błąd = pomiń to
    zlecenie i idź do następnego, BEZ śledztwa (17.09: agent spędził cały bieg
    na dociekaniu „kto mi wziął zlecenie”). Treść odpowiedzi mówi dlaczego:

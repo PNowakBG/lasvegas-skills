@@ -66,6 +66,19 @@ api_curl() {
   fi
 }
 
+# Raporty końcowe (placed/failed/skipped/attach/verify/session) ponawiamy dwa
+# razy na przejściowych błędach sieci/5xx. To bezpieczne: raport jest terminalny,
+# a ponowienie po utraconej odpowiedzi może co najwyżej dostać 404 (zlecenie
+# już zamknięte) — nigdy nie stawia drugiego kuponu. `claim` i `orders` NIE
+# korzystają z retry: ponowienie claimu to inna operacja.
+api_curl_report() {
+  if [[ -n "${LV_API_TIMEOUT:-}" ]]; then
+    curl "$CURL_FAIL" -sS --max-time "$LV_API_TIMEOUT" --retry 2 --retry-delay 1 "$@"
+  else
+    curl "$CURL_FAIL" -sS --retry 2 --retry-delay 1 "$@"
+  fi
+}
+
 # KAŻDA gałąź nazywa swoje argumenty jawnie (betId=$2, …) zamiast wstawiać
 # „$1"/„$2" prosto do URL-a i ciała żądania.
 #
@@ -146,7 +159,7 @@ else:
     [[ -n "$balanceBefore" ]] && body="$body,\"balanceBefore\":$balanceBefore"
     [[ -n "$balanceAfter" ]] && body="$body,\"balanceAfter\":$balanceAfter"
     body="$body}"
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   attach)
@@ -164,7 +177,7 @@ else:
     [[ -n "${6:-}" ]] && body="$body,\"balanceBefore\":$6"
     [[ -n "${7:-}" ]] && body="$body,\"balanceAfter\":$7"
     body="$body}"
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/attach"
     ;;
   failed)
@@ -179,7 +192,7 @@ else:
       detail_escaped=$(printf '%s' "$4" | sed 's/\\/\\\\/g; s/"/\\"/g')
       body=$(printf '{"success":false,"aborted":false,"reason":"%s","reasonDetail":"%s"}' "$reason" "$detail_escaped")
     fi
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   skipped)
@@ -191,7 +204,7 @@ else:
       detail_escaped=$(printf '%s' "$4" | sed 's/\\/\\\\/g; s/"/\\"/g')
       body=$(printf '{"success":false,"aborted":true,"reason":"%s","reasonDetail":"%s"}' "$reason" "$detail_escaped")
     fi
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/confirm"
     ;;
   kill-switch)
@@ -223,7 +236,7 @@ else:
       body="$body,\"reasonDetail\":\"$detail_escaped\""
     fi
     body="$body}"
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/queue/$betId/verify"
     ;;
   status)
@@ -313,7 +326,7 @@ else:
       body="$body,\"detail\":\"$detail_escaped\""
     fi
     body="$body}"
-    api_curl -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
+    api_curl_report -X POST -H "$(auth_header)" -H "Content-Type: application/json" \
       -d "$body" "$BASE/session"
     ;;
   help|*)
