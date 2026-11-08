@@ -1,5 +1,6 @@
 # Playbook: STS (sts.pl)
-updated: 2026-11-08   verified: yes   failures: 4
+
+updated: 2026-11-08 verified: yes failures: 4
 
 Zweryfikowany E2E 2026-08-29 (Chrome, profil `~/.hermes/lv-browser-profile`, CDP :9222).
 Ponownie sprawdzony na zywych zleceniach 2026-09-24 (Puchar Polski) - patrz "Log napraw".
@@ -142,19 +143,33 @@ fill_input("#Szukaj", "goli")   # wyszukiwarka RYNKÓW (id=Szukaj), nie wydarze�
    X przy nodze to przycisk BEZ etykiety — `button.only-icon.sds-button.tertiary.small`
    w wierszu nogi. W `bs-betslip-desktop` na starcie 09.10 byly 4 nogi (kontaminacja
    z nieudanego biegu `lv-place.py`). Skuteczny sposob:
+
    ```js
    (() => {
-     const slip=document.querySelector('bs-betslip-desktop');
-     const b=[...slip.querySelectorAll('button.only-icon')].find(x=>{
-       let n=x; for(let k=0;k<6&&n;k++,n=n.parentElement){
-         if(/Dortmund|Raków|Podbeskidzie|Wieczysta|Kupon/i.test(n.innerText||'') && (n.innerText||'').length<200) return true;
-       } return false;});
-     if(b){ b.click(); return 'clicked'; } return 'none';
-   })()
+     const slip = document.querySelector("bs-betslip-desktop");
+     const b = [...slip.querySelectorAll("button.only-icon")].find((x) => {
+       let n = x;
+       for (let k = 0; k < 6 && n; k++, n = n.parentElement) {
+         if (
+           /Dortmund|Raków|Podbeskidzie|Wieczysta|Kupon/i.test(n.innerText || "") &&
+           (n.innerText || "").length < 200
+         )
+           return true;
+       }
+       return false;
+     });
+     if (b) {
+       b.click();
+       return "clicked";
+     }
+     return "none";
+   })();
    ```
+
    Powtarzaj do zera nóg; weryfikacja: kupon pokazuje
    „Ten kupon czeka na zakłady". Gdy nogi nadal są (kupon „skażony" przeżył reload),
    skasuj szkic kuponu: `localStorage.removeItem('betslip-cache'); location.reload()`.
+
 1. Rynek `1x2` ma nagłówek `Mecz` (StaticText). Pod nim trzy przyciski kursów:
    `1 <kurs>` (home), `X <kurs>` (remis), `2 <kurs>` (away) — np. `1 2.95`.
 2. Wybierz przycisk wg `outcome` ze zlecenia (home→`1 `, draw→`X `, away→`2 `).
@@ -189,6 +204,7 @@ NIGDY nie bierz „najbliższej" linii z oferty.
 
 **KRYTYCZNE (09.10): linie CAŁKOWITE i POŁÓWKOWE są w DWÓCH RÓŻNYCH blokach rynków.**
 Strona meczu (duże ligi) ma OBA nagłówki `.market-tile-header__name`:
+
 - **`Liczba goli`** — TYLKO linie połówkowe; przyciski z kropką: `-1.5 3.70`, `+2.5 1.80`.
 - **`Liczba goli (z możliwym zwrotem)`** — linie CAŁKOWITE (zakład azjatycki, przy
   dokładnie tylu golach STS zwraca stawkę); przyciski BEZ kropki: `-2 5.40`, `+3 1.58`.
@@ -198,12 +214,16 @@ Mapowanie: dla zleceń `ou1`,`ou2`,`ou3`,`ou4`… (linia całkowita) klikaj w bl
 `ou25`, `ou35`… — blok **`Liczba goli`**, przycisk `-<N.5> <kurs>`. STS nazywa nogę
 kuponu odpowiednio: cała linia → „Liczba goli (z możliwym zwrotem)", połówka → „Liczba goli".
 Selektor bloku po nagłówku:
+
 ```js
-for (const w of [...document.querySelectorAll('bo-match-detail-market-wrapper')]) {
-  const h=w.querySelector('.market-tile-header__name');
-  if (h && h.innerText.trim()==='Liczba goli (z możliwym zwrotem)') { /* przyciski tu */ }
+for (const w of [...document.querySelectorAll("bo-match-detail-market-wrapper")]) {
+  const h = w.querySelector(".market-tile-header__name");
+  if (h && h.innerText.trim() === "Liczba goli (z możliwym zwrotem)") {
+    /* przyciski tu */
+  }
 }
 ```
+
 (UWAGA: to custom-element TAG, nie klasa — `querySelectorAll('bo-match-detail-market-wrapper')`,
 NIE `.bo-match-detail-market-wrapper`.)
 
@@ -261,10 +281,10 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
      - „minimalna stawka" → `skipped bookmaker_limit`.
    - saldo `Depozyt NNN,NN zł`: bez zmiany + brak potwierdzenia + przycisk `Postaw`
      nadal aktywny = kupon NIE poszedł.
-   **Jedno kliknięcie, potem czytanie — nie drugie kliknięcie.** Ponowny klik wolno
-   wykonać tylko, gdy wszystkie trzy odczyty mówią „nie postawiono" i nie ma komunikatu
-   błędu; wtedy raz, tą samą metodą i znów odczyt. Bez komunikatu i bez przyjęcia po
-   drugim kliku → `failed ui_error` z opisem, co pokazuje ekran.
+     **Jedno kliknięcie, potem czytanie — nie drugie kliknięcie.** Ponowny klik wolno
+     wykonać tylko, gdy wszystkie trzy odczyty mówią „nie postawiono" i nie ma komunikatu
+     błędu; wtedy raz, tą samą metodą i znów odczyt. Bez komunikatu i bez przyjęcia po
+     drugim kliku → `failed ui_error` z opisem, co pokazuje ekran.
 4. **ticketId — najpewniejsze źródło to modal „Kupon w grze".** Otwórz
    `goto_url("https://www.sts.pl/moje-zaklady/w-grze")`, poczekaj aż istnieje
    `.my-bets-ticket-header-actions` (strona renderuje LENIWIE — pętla po ~2 s do ~10 prób),
@@ -359,7 +379,6 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   4. Sesja: `Depozyt <saldo> zl`, zaraportowana `session sts logged_in <saldo>`.
   5. LasVegas: `abortReason: odds_drift`, kolejka STS pusta po raporcie.
 
-
 - **2026-10-24 (bieg manualny, 1 zalegle zlecenie STS, `621329b6` - rozstrzygniete `skipped`).**
   Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95,
   stawka 31.42) oddane przez `lv-place.py` jako `event_not_found` (wyszukiwarka nie zwrocila
@@ -375,8 +394,8 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
      polskie nazwy klubow (translacja `Madrid`->`Madryt` albo "token gospodarza + liga").
   2. **Rynek rożnych jest, linia DOKLADNA.** Blok `Liczba rzutow rożnych` renderuje sie zwiniety;
      po rozwinieciu (`.market-tile-header__actions button`; `w.scrollIntoView({block:'center'})`
-     + `b.click()` w JS) wiersze: `-8.5 3.30` ... `-12.5 2.80`. Linia zlecenia 10.5 -> przycisk
-     `-10.5 1.90` (under/"Poniżej"). Linia ISTNIEJE (`line_not_found` nie wchodzi w gre).
+     - `b.click()` w JS) wiersze: `-8.5 3.30` ... `-12.5 2.80`. Linia zlecenia 10.5 -> przycisk
+       `-10.5 1.90` (under/"Poniżej"). Linia ISTNIEJE (`line_not_found` nie wchodzi w gre).
   3. **Wynik: `skipped odds_drift`, kurs 1.95 (zlecenie) -> 1.90 (ekran).** (1.95-1.90)/1.95 =
      2.56% > 2% -> bramka par. 1 `verification-rules.md`; NIE kliknieto "Postaw" (bramka PRZED
      klikiem, Krok 4). Odczyt powtorzony 2x w odstepie 6 s - stabilny 1.90 (dryf, nie migotanie).
@@ -385,8 +404,7 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
      `session sts logged_in <saldo>`. Viewport wymuszony 1400x900
      (`Emulation.setDeviceMetricsOverride`).
   5. Slad w LasVegas: `abortReason: odds_drift`, `abortDetail: "kurs 1.95 -> 1.90
-     (Poniżej 10.5, Liczba rzutow rożnych; -2,56%)"`.
-
+(Poniżej 10.5, Liczba rzutow rożnych; -2,56%)"`.
 
 - **2026-10-10 (bieg manualny, 3 zaległe zlecenia: 1× Superbet, 2× STS — wszystkie POSTAWIONE).**
   Dwa zlecenia STS oddane przez `lv-place.py` jako `event_not_found` („wyszukiwarka STS nie
@@ -427,13 +445,13 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   (`Emulation.setDeviceMetricsOverride`), liczy nogi w `bs-betslip-desktop bs-betslip-event`,
   czyści kupon do zera PRZED każdym zleceniem i PO każdym, które nie doszło do `ready`
   (X = `.icon-close` w `bs-betslip-event`), weryfikuje nogę po tekście kuponu (obie drużyny
-  + linia), szuka przez `/szukaj?s=<token>`, odrzuca esporty (nawias w adresie) i kafle
-  U19/U21/II/kobiet, gdy zlecenie ich nie dotyczy (09.10: `warszawa`+`krakow` trafiło
-  w Escola Varsovia U19 – Wisła U19 zamiast Legia – Wisła), czeka do 12 s na blok rynku
-  zamiast progu `> 3` rynków, nie uznaje „Kurs całkowity” za potwierdzenie, a numer kuponu
-  bierze z modala „Kupon w grze” (`sds-overlay-container`, URL `szczegoly/<18 cyfr>`;
-  w numerze są znaki `\u200d`) po sprawdzeniu stawki i drużyn W MODALU.
-  Sprawdzone na żywo bez stawiania: ou2/ou25/1x2/drift, kupon zaśmiecony innym meczem.
+  - linia), szuka przez `/szukaj?s=<token>`, odrzuca esporty (nawias w adresie) i kafle
+    U19/U21/II/kobiet, gdy zlecenie ich nie dotyczy (09.10: `warszawa`+`krakow` trafiło
+    w Escola Varsovia U19 – Wisła U19 zamiast Legia – Wisła), czeka do 12 s na blok rynku
+    zamiast progu `> 3` rynków, nie uznaje „Kurs całkowity” za potwierdzenie, a numer kuponu
+    bierze z modala „Kupon w grze” (`sds-overlay-container`, URL `szczegoly/<18 cyfr>`;
+    w numerze są znaki `\u200d`) po sprawdzeniu stawki i drużyn W MODALU.
+    Sprawdzone na żywo bez stawiania: ou2/ou25/1x2/drift, kupon zaśmiecony innym meczem.
 
 - **2026-10-09 (bieg manualny, 9 zleceń zaległych + 1 nowe, wszystkie STS, 10/10 POSTAWIONE).**
   `lv-place.py` oddał 7x `selection_not_added` i 2x `event_not_found`. Diagnoza i poprawki
@@ -463,18 +481,18 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
      `/moje-zaklady/w-grze`); po `lv-login.py sts` wróciła i odczyt się udał.
   7. API LasVegas rzuciło przejściowe `503` (~1 min) na wszystkie endpointy — ponawianie
      pomogło; raport `placed` dla 22f2df26 czekał do powrotu serwera.
-  Wyniki (betId → ticket, kurs, stawka, saldo przed→po):
-  03baa9b7 → <numer kuponu> (3.60, 22.48, saldo przed->po);
-  f60f04ec → <numer kuponu> (8.10, 13.49, saldo przed->po);
-  86b7d85d → <numer kuponu> (4.25, 13.49, saldo przed->po);
-  816d5246 → <numer kuponu> (7.25, 17.99, saldo przed->po);
-  09e25416 → <numer kuponu> (1.98, 32.18, saldo przed->po);
-  947b09a6 → <numer kuponu> (5.40, 32.18, saldo przed->po);
-  22f2df26 → <numer kuponu> (2.00, 35.04, saldo przed->po);
-  1fcd834a → <numer kuponu> (10.50, 21.22, saldo przed->po);
-  4040b1bf → <numer kuponu> (2.85, 15.77, saldo przed->po);
-  e14699cf → <numer kuponu> (5.25, 10.00, saldo przed->po).
-  Wszystkie kursy ≥ `odds` ze zlecenia (brak dryfu), wszystkie stawki == `stake`.
+     Wyniki (betId → ticket, kurs, stawka, saldo przed→po):
+     03baa9b7 → <numer kuponu> (3.60, 22.48, saldo przed->po);
+     f60f04ec → <numer kuponu> (8.10, 13.49, saldo przed->po);
+     86b7d85d → <numer kuponu> (4.25, 13.49, saldo przed->po);
+     816d5246 → <numer kuponu> (7.25, 17.99, saldo przed->po);
+     09e25416 → <numer kuponu> (1.98, 32.18, saldo przed->po);
+     947b09a6 → <numer kuponu> (5.40, 32.18, saldo przed->po);
+     22f2df26 → <numer kuponu> (2.00, 35.04, saldo przed->po);
+     1fcd834a → <numer kuponu> (10.50, 21.22, saldo przed->po);
+     4040b1bf → <numer kuponu> (2.85, 15.77, saldo przed->po);
+     e14699cf → <numer kuponu> (5.25, 10.00, saldo przed->po).
+     Wszystkie kursy ≥ `odds` ze zlecenia (brak dryfu), wszystkie stawki == `stake`.
 
 - **2026-09-27 (bieg manualny, 9 zleceń STS Puchar Polski; 2 postawione, 7 pominiętych).**
   `lv-place.py` oddał 1x `navigation_failed/event_page_not_rendered` (36037d84)
@@ -515,9 +533,9 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   4. brak rynku `Liczba goli` na obu meczach `ou2/under` → nowy przepis
      `skipped market_mismatch` z listą dostępnych rynków (Krok 4);
   5. numer kuponu tylko z modala "Kupon w grze" (Krok 6).
-  Wynik: 9bf67d87 POSTAWIONE (1x2 home, kurs 4.00, stawka 10 zł, kupon
-  <numer kuponu>, saldo przed → po); 6d591731 i 1f46ebd1 pominięte
-  (`market_mismatch`). Poprawki 1-3 i 5 do przeniesienia do `lv-place.py`.
+     Wynik: 9bf67d87 POSTAWIONE (1x2 home, kurs 4.00, stawka 10 zł, kupon
+     <numer kuponu>, saldo przed → po); 6d591731 i 1f46ebd1 pominięte
+     (`market_mismatch`). Poprawki 1-3 i 5 do przeniesienia do `lv-place.py`.
 
 - **2026-10-24 (bieg manualny Hermes, zlecenie `621329b6` — PONOWNIE w kolejce mimo wpisow wyzej; rozstrzygniete `skipped odds_drift`, raport POTWIERDZONY w API).**
   Wpis korygujacy: poprzednie trzy wpisy z 2026-10-24 twierdzily, ze kolejka zostala zwolniona — zlecenie wrocilo
@@ -541,8 +559,8 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
      viewport wymuszony 1400x900 (`Emulation.setDeviceMetricsOverride`).
   5. Raport: `skipped 621329b6 odds_drift "kurs 1.95 -> 1.90 (Ponizej 10.5, Liczba rzutow roznych; -2,56%)"`;
      API potwierdzilo `abortReason: odds_drift`; kolejka STS PUSTA.
-  **Do przeniesienia do `lv-place.py` (KANDYDAT #1, wciaz nie zrobione):** fallback wyszukiwarki "token GOSPODARZA + liga ze
-  zlecenia" zamiast wymogu obu tokenow, plus odrzucanie esportu/rezerw/kobiet/koszykowki; obie druzyny potwierdzac na stronie meczu.
+     **Do przeniesienia do `lv-place.py` (KANDYDAT #1, wciaz nie zrobione):** fallback wyszukiwarki "token GOSPODARZA + liga ze
+     zlecenia" zamiast wymogu obu tokenow, plus odrzucanie esportu/rezerw/kobiet/koszykowki; obie druzyny potwierdzac na stronie meczu.
 
 - **2026-10-24 (bieg manualny Hermes, zlecenie `621329b6` — NAPRAWA wyszukiwarki + rozstrzygnięcie `skipped odds_drift`; kolejka zwolniona).**
   Zlecenie (`FC Barcelona` - `Real Madrid CF`, la-liga, `corners_ou105` under, kurs 1.95, stawka 31.42)
@@ -608,6 +626,6 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   6. **Raport i slad w API:** `skipped 621329b6 odds_drift "kurs 1.95 -> 1.90 (Poniżej 10,5, Liczba rzutów rożnych; -2,56%)"`
      -> API: `status: placed`, `autoStatus: aborted`, `abortReason: odds_drift`, `abortDetail` j.w., `confirmedAt`
      ustawione; `orders` po raporcie = `[]` (kolejka STS pusta).
-  **Kryterium "zlecenie naprawde zamkniete" (bląd poprzednich wpisow z 24.10):** nie wystarczy wyslac raportu —
-  trzeba go POTWIERDZIC w API: `autoStatus: aborted` + `abortReason` w odpowiedzi `skipped`/`failed` oraz pusta lista
-  `orders`. Wczesniejsze wpisy meldowaly "kolejka zwolniona" po samym wyslaniu raportu, a zlecenie wracalo.
+     **Kryterium "zlecenie naprawde zamkniete" (bląd poprzednich wpisow z 24.10):** nie wystarczy wyslac raportu —
+     trzeba go POTWIERDZIC w API: `autoStatus: aborted` + `abortReason` w odpowiedzi `skipped`/`failed` oraz pusta lista
+     `orders`. Wczesniejsze wpisy meldowaly "kolejka zwolniona" po samym wyslaniu raportu, a zlecenie wracalo.

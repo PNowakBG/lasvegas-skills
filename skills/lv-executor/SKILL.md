@@ -49,9 +49,9 @@ Pętla egzekucji — wykonuj SEKWENCYJNIE, jedno zlecenie po drugim:
    otwórz buka (wg playbooka) i sprawdź otwarte zakłady: szukaj meczu
    (`homeTeam` vs `awayTeam`), stawki `stake` i rynku `market`/`outcome` z
    zlecenia. Kupon jest na koncie → `bash scripts/lv-api.sh verify <betId> true
-   <ticketId>` (podaj PRAWDZIWY numer kuponu z buka). Kuponu nie ma (i saldo
+<ticketId>` (podaj PRAWDZIWY numer kuponu z buka). Kuponu nie ma (i saldo
    bez zmian) → `bash scripts/lv-api.sh verify <betId> false "" "brak kuponu w
-   otwartych zakładach, saldo bez zmian"` — zlecenie wróci do kolejki.
+otwartych zakładach, saldo bez zmian"` — zlecenie wróci do kolejki.
    **Nigdy nie stawiaj ponownie zlecenia z listy weryfikacji bez tego
    rozstrzygnięcia** — retraj bez sprawdzenia postawił duplikat kuponu
    (prod 2026-09-06: Napoli – Arsenal, dwa identyczne kupony u STS).
@@ -82,6 +82,7 @@ Gdy mimo to widzisz `loginBlocked: true`, dla każdego takiego buka uruchom:
 `python3 scripts/lv-login.py <slug>` (Windows: `python scripts\lv-login.py <slug>`).
 Skrypt sam sprawdza sesję i w razie potrzeby loguje z zapisanych poświadczeń;
 na stdout dostajesz JEDNĄ linię JSON — nigdy login ani hasło:
+
 - `"state":"logged_in"` → `bash scripts/lv-api.sh session <slug> logged_in <balance>`
   (`balance` z JSON, gdy nie jest null) — raport odblokowuje zlecenia tego buka;
   claimuj je normalnie,
@@ -202,6 +203,7 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
     sesji „na zapas".
 
 Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
+
 - NIE otwieraj nowych kart na całość biegu — zlecenie otwieraj przez `goto_url`
   w istniejącej karcie przeglądarki; `new_tab` tylko gdy nie ma żadnej karty.
   Na STARCIE biegu posprzątaj karty bukmacherów z poprzednich biegów:
@@ -250,6 +252,7 @@ Twarde zakazy (obowiązują zawsze, nawet gdy zlecenie „wisi"):
 ## Verification
 
 Po biegu:
+
 - `bash scripts/lv-api.sh status` / LasVegas UI: zlecenia przeszły QUEUED → PLACED
   (lub FAILED z powodem).
 - `bash scripts/lv-api.sh session <slug> <logged_in|logged_out> [saldo] [reason] [detail]`
