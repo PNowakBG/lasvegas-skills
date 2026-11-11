@@ -6,9 +6,20 @@ przed każdym kliknięciem „Postaw". Naruszenie którejkolwiek = brak postawie
 ## 1. Kurs
 
 - Odczytaj kurs z ekranu kuponu (nie z oferty — liczy się ten na kuponie).
-- Tolerancja jest ASYMETRYCZNA (decyzja właściciela 2026-09-01):
-  - kurs **niższy** niż w zleceniu o więcej niż 2 % (`(odds_zlecenie − odds_ekran) / odds_zlecenie > 0.02`)
-    → `skipped: odds_drift`. Nie negocjuj, nie poprawiaj.
+- Tolerancja jest ASYMETRYCZNA (decyzja właściciela 2026-09-01), a dla niższego kursu
+  liczy się OPŁACALNOŚĆ, nie sztywny procent (zmiana 2026-11-11):
+  - zlecenie niesie `oddsFloor` — próg opłacalności po podatku, policzony przez LasVegas
+    z modelu. Kurs **niższy** niż w zleceniu bierz, gdy `kurs_ekran ≥ oddsFloor` ORAZ spadek
+    nie przekracza 8 % (`(odds_zlecenie − odds_ekran) / odds_zlecenie ≤ 0.08`). Kurs pod
+    progiem → `skipped: odds_drift`, nawet gdy spadł o 1 % — to zakład ze stratą.
+    Spadek ponad 8 % → `skipped: odds_drift` niezależnie od progu: tak duża różnica to
+    częściej inny rynek albo linia niż ruch ceny (12.09: 3.60 → 2.25 było inną linią).
+    Skąd zmiana: 10–11.10 pięć zleceń odpadło przy spadku 3–7 %, choć były opłacalne,
+    a sztywne 2 % przepuszczało kursy nieopłacalne po podatku 12 %.
+  - zlecenie BEZ `oddsFloor` (kupon ręczny, AKO): kurs niższy o więcej niż 2 %
+    → `skipped: odds_drift`.
+  - `minOdds` zlecenia to minimum reguły — kurs pod nim → `skipped: odds_drift` zawsze.
+  - Nie negocjuj, nie poprawiaj.
   - kurs **wyższy** niż w zleceniu → bierz, bez górnej granicy. Lepsza cena nie jest
     powodem do blokady — 01.09 zlecenie Toulouse–Lille (2.40) padło przy 2.50 na STS
     przez dawną regułę „za dobry kurs = podejrzany".

@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.24
+version: 1.5.25
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -152,7 +152,8 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
    sugerowaną" przez bukmachera). Zignoruj banery bonusowe i boosty kursowe —
    nie klikaj niczego, co zmienia kupon.
 7. **Weryfikacja kuponu na ekranie** wg `references/verification-rules.md`:
-   kurs na ekranie vs `odds` (niższy o >2 % → `odds_drift`; wyższy → bierz), stawka vs `stake`, rynek/typ vs
+   kurs na ekranie vs `odds` (wyższy → bierz; niższy → bierz tylko, gdy ≥ `oddsFloor` zlecenia i spadek ≤ 8 %,
+   a bez `oddsFloor` gdy spadek ≤ 2 %; inaczej `odds_drift`), stawka vs `stake`, rynek/typ vs
    zlecenie, liczba selekcji w kuponie == 1 (lub liczba nóg AKO). JAKA KOLWIEK
    rozbieżność → NIE klikaj „Postaw" → `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.15 → 1.60"`
    (lub adekwatny powód z detail) → następne zlecenie.

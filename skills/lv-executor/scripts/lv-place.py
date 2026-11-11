@@ -26,7 +26,9 @@ na którym padł, i NIGDY nie klika „Postaw” po drodze.
 
 Zasady bezpieczeństwa (te same co w SKILL.md / verification-rules):
 - linia rynku DOKŁADNIE ze zlecenia (2 ≠ 2,5), nigdy „najbliższa”;
-- kurs na ekranie niższy o >2 % niż w zleceniu → `skipped odds_drift`; wyższy → OK;
+- kurs na ekranie: wyższy → OK; niższy → OK tylko, gdy ≥ `oddsFloor` zlecenia (próg
+  opłacalności po podatku) i spadek ≤ 8 %; zlecenie bez progu → tolerancja 2 %;
+  inaczej `skipped odds_drift`;
 - stawka DOKŁADNIE ze zlecenia, potwierdzona na przycisku/kuponie;
 - kupon musi być pusty przed dodaniem selekcji i mieć 1 selekcję przed „Postaw”;
 - po kliknięciu: jedno kliknięcie, potem czytanie (potwierdzenie, błędy, saldo).
@@ -163,12 +165,34 @@ def fmt_line(line):
         return r"%s[.,]%s(?!\d)" % (re.escape(a), re.escape(b))
     return r"%s(?:[.,]0)?(?![.,]?\d)" % re.escape(line)
 
-def odds_ok(displayed, wanted):
-    """Bramka kursu: niższy o więcej niż 2 % → nie. Wyższy → tak."""
+def _order_number(key):
     try:
-        return float(displayed) >= float(wanted) * 0.98
+        value = float(ORDER.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 1 else None
+
+def odds_ok(displayed, wanted):
+    """Bramka kursu. Wyższy albo równy → tak. Niższy:
+    - zlecenie niesie `oddsFloor` (próg opłacalności po podatku, liczony przez LasVegas
+      z modelu) → bierz każdy kurs ≥ progu, byle spadek nie przekraczał 8 % (większy
+      to częściej inny rynek albo linia niż ruch ceny); kurs pod progiem → nie, nawet
+      gdy spadł o 1 %;
+    - zlecenie bez progu (kupon kliknięty ręcznie, AKO) → stara tolerancja 2 %.
+    Minimum reguły (`minOdds`) obowiązuje zawsze."""
+    try:
+        shown, asked = float(displayed), float(wanted)
     except (TypeError, ValueError):
         return False
+    rule_min = _order_number("minOdds")
+    if rule_min is not None and shown < rule_min:
+        return False
+    if shown >= asked:
+        return True
+    floor = _order_number("oddsFloor")
+    if floor is not None:
+        return shown >= floor and shown >= asked * 0.92
+    return shown >= asked * 0.98
 
 def parse_amount(text):
     m = re.search(r"(\d[\d\s ]*[.,]\d{2})", str(text or ""))

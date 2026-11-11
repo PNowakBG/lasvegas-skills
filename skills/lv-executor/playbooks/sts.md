@@ -174,9 +174,10 @@ fill_input("#Szukaj", "goli")   # wyszukiwarka RYNKÓW (id=Szukaj), nie wydarze�
    `1 <kurs>` (home), `X <kurs>` (remis), `2 <kurs>` (away) — np. `1 2.95`.
 2. Wybierz przycisk wg `outcome` ze zlecenia (home→`1 `, draw→`X `, away→`2 `).
 3. PRZED kliknięciem przeczytaj kurs z etykiety przycisku (np. `1 2.95` → 2.95).
-   Bramka kursu (verification-rules §1): niższy niż `odds` ze zlecenia o więcej niż 2 %
+   Bramka kursu (verification-rules §1): niższy niż `odds` i poza tolerancją (pod `oddsFloor`
+   zlecenia albo spadek > 8 %; bez `oddsFloor` spadek > 2 %)
    → NIE klikaj; raport `bash scripts/lv-api.sh skipped <betId> odds_drift "kurs 2.10 → 1.95"`.
-   Równy, minimalnie niższy (≤ 2 %) albo **wyższy** → klikaj — wyższy kurs to lepszy zakład
+   Równy, niższy w tolerancji albo **wyższy** → klikaj — wyższy kurs to lepszy zakład
    (01.09: 2.50 wobec 2.40 na Toulouse–Lille miało zostać postawione).
 4. Kliknij — po prawej pojawia się kupon z selekcją. Po kliknięciu przeczytaj kurs
    Z KUPONU i zastosuj tę samą bramkę.
@@ -267,7 +268,7 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
 1. Kliknij przycisk `Postaw ... zł` (prawdziwy klik przez `click_at_xy` na środku
    `getBoundingClientRect()` przycisku — 09.10 działał konsekwentnie; `x≈1212`).
 2. Jeśli wyskoczy dialog zmiany kursu — zaakceptuj, gdy nowy kurs jest wyższy albo niższy
-   o ≤ 2 % od `odds`; niższy o więcej → anuluj i `skipped odds_drift`.
+   w tolerancji z verification-rules §1; inaczej → anuluj i `skipped odds_drift`.
 3. Poczekaj ~5-6 s (saldo ma opóźnienie) i odczytaj TRZY rzeczy naraz — potwierdzenie,
    błędy, saldo:
    - potwierdzenie: „Przyjęliśmy Twój kupon!", „Kurs całkowity", „Możesz wygrać";

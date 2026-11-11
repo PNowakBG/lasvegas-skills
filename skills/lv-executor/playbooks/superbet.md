@@ -131,7 +131,7 @@ rożne) NIE mają `.e2e-odd-name` — czytaj aria-label:
 `.e2e-market-odd` już NIE istnieje (0 elementów, 2026-10-24) — kursy czytaj z `button.odd-button`
 w karcie rynku (aria-label „…, współczynnik 1.65, active”).
 Bramka kursu (verification-rules §1) PRZED kliknięciem: kurs z aria/`.e2e-odd-value`
-niższy o >2 % niż `odds` → `skipped odds_drift`. Kupon musi być PUSTY: licznik nóg to
+niższy niż `odds` i poza tolerancją (§1: `oddsFloor`, 8 %; bez progu 2 %) → `skipped odds_drift`. Kupon musi być PUSTY: licznik nóg to
 tekst przycisku `.clear-button` (np. „1”); pusty kupon = `.e2e-betslip-empty-placeholder`
 („Kupon jest pusty. Kliknij w kurs aby dodać mecz.”). Nogi z poprzednich biegów
 usuń `.clear-button` → potwierdź „Usuń wszystko”/„Wyczyść”.
@@ -146,7 +146,7 @@ przez `fill_input('input[name="stake"]', "10.68")` (Vue — zwykłe wpisanie DOP
 potem odczytaj `input.value` i sekcję „STAWKA … PLN” na kuponie. Inna kwota niż
 `stake` → NIE klikaj, powtórz. „POT. WYPŁATA” = stawka × kurs × 0,88 (podatek 12 %)
 — zgodność potwierdza stawkę i kurs. „KURS 1.97” na kuponie musi zgadzać się z
-klikniętym kursem (bramka 2 %).
+klikniętym kursem (bramka kursu z §1).
 **Kupon NIE czyści się sam po postawieniu** — noga właśnie postawionego kuponu zostaje w panelu,
 a dodanie kolejnej nogi dałoby AKO. Przed budową następnego kuponu wyczyść `.clear-button`
 (klasa `e2e-clear-destop-betslip`); w biegu 2026-10-24 czyszczenie jednej nogi NIE pokazało
