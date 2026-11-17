@@ -11,6 +11,8 @@
 #    systemd. Chrome odpalany wprost przez „&" ginął co cykl (86 restartów
 #    31.08–01.09, okno „Nowa karta" co 5 min),
 # 3) blokuje nakładanie się cykli (lock),
+# 3a) przy pustej kolejce nie zostawia nic: zamyka sesje u buków i gasi
+#     przeglądarkę agenta; czas zalogowania mierzy i trzyma w dziennym budżecie,
 # 4) odpala hermes chat ze skillem lv-executor i wysyła powiadomienie systemowe
 #    (osascript na macOS, notify-send na Linuksie), gdy agent zgłosi brak
 #    logowania / brak środków — w trybie -q nikt nie czyta czatu.
@@ -297,6 +299,76 @@ dir_mtime() {
 }
 cdp_alive() { curl -sf --max-time 3 "$CDP/json/version" > /dev/null 2>&1; }
 
+# Singleton lock (mkdir jest atomowe), z PID właściciela. 0 = lock jest nasz
+# i zniknie przy wyjściu skryptu; 1 = trzyma go ktoś inny (opis w LOCK_BUSY).
+# Do 2026-09-01 „stary" lock (>20 min) był kasowany w ciemno — a realny przebieg
+# z dwoma zleceniami trwa 20–30 min. Drugi agent na tej samej przeglądarce i tym
+# samym kuponie to podwójny zakład albo rozjechany kupon. Żywy proces = lock
+# ważny bez względu na wiek; wiek liczy się tylko, gdy po procesie nie ma śladu
+# (crash bez trap EXIT).
+acquire_lock() {
+  local lock_pid lock_age
+  if ! mkdir "$LOCK" 2>/dev/null; then
+    lock_pid=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+    lock_age=$(( $(date +%s) - $(dir_mtime "$LOCK") ))
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+      LOCK_BUSY="pid $lock_pid, ${lock_age}s"
+      return 1
+    fi
+    if [ "$lock_age" -gt 3600 ] || [ -n "$lock_pid" ]; then
+      # proces nie żyje (albo lock bez PID starszy niż godzina) — sprzątamy
+      rm -rf "$LOCK"
+      mkdir "$LOCK" 2>/dev/null || { LOCK_BUSY="przejęty w tej samej chwili"; return 1; }
+    else
+      LOCK_BUSY="lock ${lock_age}s, bez PID"
+      return 1
+    fi
+  fi
+  echo $$ > "$LOCK/pid"
+  trap 'rm -rf "$LOCK"' EXIT
+}
+
+# --- czas zalogowania u buka ---------------------------------------------------
+# Bukmacher liczy do dziennego limitu gry CAŁY czas zalogowania, nie kupony
+# (11–17.11.2026: sesja STS wisiała 6,5 doby w oknie agenta bez jednego zlecenia).
+# Licznik i dzienny budżet prowadzi lv-login.py — jedyne miejsce, przez które
+# loguje się i cykl, i model, więc budżetu nie da się obejść drugą drogą. Tu są
+# tylko pytania do niego; żadne nie dotyka przeglądarki.
+# Ile `login <buk>` czeka na ENTER po otwarciu okna — przez ten czas trzyma lock cyklu.
+LOGIN_CONFIRM_TIMEOUT=600
+# Buki, w których cykl sam pilnuje sesji (te same, które zna lv-login.py).
+PROBED_BOOKMAKERS="sts superbet"
+# $1 = slug, $2 = --session-status | --session-seen | --session-end | --session-sync=alive|dead
+session_tool() {
+  local py
+  py=$(python_bin) || return 1
+  "$py" "$LOGIN_PY" "$1" "$2" 2>> "$LOG"
+}
+
+# Kod 3 = budżet wyczerpany. Każdy inny wynik (także brak Pythona) = nie wiemy,
+# więc nie blokujemy — odmówi sam lv-login.py, jeśli ma powód.
+session_budget_spent() {
+  session_tool "$1" --session-status > /dev/null
+  [ $? -eq 3 ]
+}
+
+# Początek każdego cyklu: licznik zgodny ze stanem przeglądarki, a sesja, która
+# trwa mimo wyczerpanego budżetu, jest zamykana od razu — bez względu na kolejkę,
+# przełącznik „Zamykaj sesję po pracy" i to, czy API odpowiada. Czekające
+# zlecenia, awaria API ani logowanie z ręki nie przedłużą więc sesji ponad budżet
+# o więcej niż jeden bieg (trwającego biegu modelu cykl nie przerywa).
+session_sync() {
+  local slug alive=dead status
+  cdp_alive && alive=alive
+  for slug in $PROBED_BOOKMAKERS; do
+    status=$(session_tool "$slug" "--session-sync=$alive")
+    [ $? -eq 3 ] && [ "$alive" = "alive" ] || continue
+    printf '%s' "$status" | grep -q '"open"[[:space:]]*:[[:space:]]*true' || continue
+    log "$slug: sesja trwa, a dzienny budżet czasu zalogowania jest wyczerpany — zamykam"
+    logout_bookmaker "$slug" || true
+  done
+}
+
 # Python do lv-login.py: systemowy python3 wystarcza (sam stdlib), zapas = venv Hermesa.
 python_bin() {
   if command -v python3 > /dev/null 2>&1; then
@@ -345,6 +417,10 @@ login_bookmaker() {
       || log "OSTRZEŻENIE: nie zgłoszono logged_in $slug do LasVegas"
     return 0
   fi
+  # Budżet czasu zalogowania to decyzja agenta, nie awaria logowania: bez meldunku
+  # do LasVegas (tam i tak stoi „sesja zamknięta") i bez 6 h blokady — jutro
+  # logowanie rusza samo. Właściciela powiadamia ensure_logins.
+  [ "$reason" = "session_budget" ] && return 1
   # Brak wyniku (skrypt padł) też jest powodem — nie zostawiamy LasVegas bez wiedzy.
   [ -n "$reason" ] || reason="login_error"
   [ -n "$detail" ] || detail="lv-login.py nie zwrócił wyniku"
@@ -451,6 +527,14 @@ ensure_logins() {
       fi
       continue
     fi
+    if session_budget_spent "$slug"; then
+      log "pomijam logowanie $slug: dzienny budżet czasu zalogowania wyczerpany — zlecenia czekają do jutra"
+      notify "LasVegas agent" "$slug: dzienny budżet czasu zalogowania agenta (4 h) jest wyczerpany — do północy agent nie loguje się ponownie, zlecenia czekają ($(date +%F))."
+      continue
+    fi
+    # Przeglądarka dopiero tu: gdy nie ma kogo logować (blokada, budżet), nie
+    # startuje wcale — przy pustej kolejce zaraz byłaby zamykana, i tak co 5 minut.
+    ensure_chrome || { log "BŁĄD: przeglądarka agenta nie wystartowała — logowanie $slug pominięte"; return 0; }
     login_bookmaker "$slug" && CYCLE_LOGINS="${CYCLE_LOGINS:+$CYCLE_LOGINS }$slug"
   done
 }
@@ -463,15 +547,26 @@ ensure_logins() {
 # W APLIKACJI (panel bukmachera → „Zamykaj sesję po pracy"); cykl czyta to z
 # GET /executor/session-policy. Żadnych przełączników w środowisku — nikt o
 # nich nie pamięta (właściciel, 17.09).
+# Buki wylogowane w TYM cyklu — sprzątanie pustej kolejki nie otwiera ich drugi raz.
+CYCLE_LOGOUTS=""
 logout_bookmaker() {
-  local slug="$1" py state reason detail
+  local slug="$1" py state reason detail minutes
   py=$(python_bin) || { log "BŁĄD: brak python3 — nie wyloguję $slug"; return 1; }
   LOGOUT_RESULT=$(BU_CDP_URL="$CDP" "$py" "$LOGIN_PY" "$slug" --logout 2>> "$LOG") || true
   state=$(json_field "$LOGOUT_RESULT" state)
   reason=$(json_field "$LOGOUT_RESULT" reason)
   detail=$(json_field "$LOGOUT_RESULT" detail)
-  if [ "$state" = "logged_out" ]; then
+  # Tylko „session_closed" jest dowodem. Wyjątek harnessu (zawieszona przeglądarka)
+  # wracał jako logged_out/login_error i szedł do LasVegas jako zamknięta sesja,
+  # choć nikt nie sprawdził, czy ona żyje.
+  if [ "$state" = "logged_out" ] && [ "$reason" = "session_closed" ]; then
     log "wylogowanie $slug: ${detail:-ok}"
+    CYCLE_LOGOUTS="${CYCLE_LOGOUTS:+$CYCLE_LOGOUTS }$slug"
+    # Czy sesja faktycznie była otwarta — to samo zdanie zwraca lv-login.py.
+    LOGOUT_WAS_OPEN=1
+    [ "$detail" = "sesja była już zamknięta" ] && LOGOUT_WAS_OPEN=0
+    minutes=$(json_field "$LOGOUT_RESULT" sessionMin)
+    [ -n "$minutes" ] && log "$slug: sesja trwała $minutes min, dziś razem $(json_field "$LOGOUT_RESULT" usedTodayMin) min z $(json_field "$LOGOUT_RESULT" budgetMin)"
     lv_api 15 session "$slug" logged_out "" session_closed "${detail:-wylogowano po cyklu}" > /dev/null 2>&1 \
       || log "OSTRZEŻENIE: nie zgłoszono session_closed $slug do LasVegas"
     return 0
@@ -505,16 +600,47 @@ logout_bookmakers() {
   pending=$(queue_bookmakers "$(queue_json 2>/dev/null || echo '[]')")
   SESSION_POLICY=$(lv_api 10 session-policy 2>/dev/null) || SESSION_POLICY=""
   for slug in $1; do
-    if printf '%s\n' "$pending" | grep -qx "$slug"; then
+    # Czekające zlecenia trzymają sesję tylko w ramach dziennego budżetu — kupon,
+    # który godzinami nie daje się postawić, nie może godzinami trzymać logowania.
+    if printf '%s\n' "$pending" | grep -qx "$slug" && ! session_budget_spent "$slug"; then
       log "$slug: w kolejce zostały zlecenia — sesja zostaje do następnego cyklu"
+      # Potwierdzenie dla licznika (tylko otwartej sesji — licznika nie otwiera).
+      session_tool "$slug" --session-sync=alive > /dev/null || true
       grep -qx "$slug" "$KEPT_SESSIONS" 2>/dev/null || echo "$slug" >> "$KEPT_SESSIONS"
     elif policy_logout_after_work "$slug"; then
       logout_bookmaker "$slug" || true
       sed -i.bak "/^$slug\$/d" "$KEPT_SESSIONS" 2>/dev/null && rm -f "$KEPT_SESSIONS.bak"
     else
       log "$slug: „Zamykaj sesję po pracy” wyłączone w LasVegas — sesja zostaje"
+      session_tool "$slug" --session-sync=alive > /dev/null || true
     fi
   done
+}
+
+# Pusta kolejka = żadnej sesji i żadnej przeglądarki. Do 1.5.25 cykl zamykał
+# tylko sesje, które sam otworzył, a przy pustej kolejce do przeglądarki nie
+# zaglądał. Logowanie z ręki w oknie agenta, `login <buk>` bez zleceń albo
+# nieudane wylogowanie zostawiały więc sesję na dni (11–17.11.2026: STS, 6,5 doby).
+# Żywa przeglądarka bez zleceń jest sygnałem: sprawdzamy w niej KAŻDEGO buka,
+# zamykamy, co otwarte, i gasimy ją — kolejne puste cykle nie mają już czego
+# sprawdzać, a karta buka nie podtrzymuje sesji. Przy zleceniu cykl startuje ją sam.
+close_idle_browser() {
+  local slug
+  SESSION_POLICY=$(lv_api 10 session-policy 2>/dev/null) || SESSION_POLICY=""
+  for slug in $PROBED_BOOKMAKERS; do
+    case " $CYCLE_LOGOUTS " in *" $slug "*) continue ;; esac
+    policy_logout_after_work "$slug" || continue
+    if logout_bookmaker "$slug"; then
+      [ "$LOGOUT_WAS_OPEN" = "1" ] \
+        && notify "LasVegas agent" "$slug: w przeglądarce agenta była otwarta sesja bez zleceń — zamknąłem ją, żeby nie zjadała limitu czasu gry."
+    else
+      notify "LasVegas agent" "$slug: nie potwierdziłem zamknięcia sesji bez zleceń — gaszę przeglądarkę agenta. Sprawdź u bukmachera, czy sesja nie wisi."
+      # Bez przeglądarki nic tej sesji nie podtrzymuje — licznik kończy się tutaj.
+      session_tool "$slug" --session-end > /dev/null || true
+    fi
+  done
+  stop_chrome
+  log "brak zleceń — przeglądarka agenta zamknięta"
 }
 NOTIFY_TTL=$((6 * 3600))
 notify() {
@@ -735,10 +861,9 @@ browser_failure() {
   return 1
 }
 
-# Twardy restart przeglądarki agenta. cdp_alive tego nie wykryje: zawieszony
-# Chrome dalej odpowiada na /json/version, a każda nawigacja kończy się timeoutem.
-# Wzorzec łapie wyłącznie Chrome z profilem agenta — zwykła przeglądarka zostaje.
-restart_chrome() {
+# Zamknięcie przeglądarki agenta. Wzorzec łapie wyłącznie Chrome z profilem
+# agenta — zwykła przeglądarka zostaje.
+stop_chrome() {
   pkill -f "user-data-dir=$PROFILE_DIR" 2>/dev/null || true
   for _ in $(seq 1 15); do
     pgrep -f "user-data-dir=$PROFILE_DIR" > /dev/null 2>&1 || break
@@ -750,6 +875,12 @@ restart_chrome() {
   if ! pgrep -f "hermes chat" > /dev/null 2>&1; then
     pkill -f "browser_harness.daemon" 2>/dev/null || true
   fi
+}
+
+# Twardy restart przeglądarki agenta. cdp_alive tego nie wykryje: zawieszony
+# Chrome dalej odpowiada na /json/version, a każda nawigacja kończy się timeoutem.
+restart_chrome() {
+  stop_chrome
   ensure_chrome
 }
 
@@ -818,6 +949,19 @@ case "${1:-cycle}" in
         exit 2
         ;;
     esac
+    # Logowanie z ręki trzyma lock cyklu aż do końca tej komendy: cykl z timera
+    # nie przejmie wtedy karty w połowie captchy, a przy pustej kolejce nie
+    # zamknie przeglądarki, w której właśnie się logujesz. Trwający cykl kończy
+    # się zwykle w kilka sekund — czekamy na niego do pół minuty. Lock żywego
+    # procesu nie wygasa, więc czekanie na ENTER niżej MUSI mieć limit
+    # (LOGIN_CONFIRM_TIMEOUT): zapomniany terminal zatrzymałby wszystkie cykle,
+    # a sesja wisiałaby poza licznikiem i sprzątaniem.
+    for _ in $(seq 1 30); do
+      acquire_lock && break
+      sleep 1
+    done
+    [ -f "$LOCK/pid" ] && [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] \
+      || echo "Uwaga: trwa cykl agenta ($LOCK_BUSY) — okno może zostać przejęte albo zamknięte, zanim skończysz."
     ensure_chrome || exit 1
     # Najpierw skrypt: gdy poświadczenia są zapisane, logowanie nie potrzebuje
     # człowieka. Okno dla użytkownika otwieramy dopiero, gdy skrypt oddał sprawę
@@ -842,7 +986,11 @@ case "${1:-cycle}" in
     # Bez tty (launchd, pipe) nie ma kogo zapytać o potwierdzenie — kończymy
     # sukcesem, żeby nie blokować cyklu; logowanie zweryfikuje Krok 0 agenta.
     if [[ -t 0 ]]; then
-      read -r -p "Zaloguj się, a potem wciśnij ENTER (wpisany tekst jest ignorowany): " _ < /dev/tty || true
+      if ! read -r -t "$LOGIN_CONFIRM_TIMEOUT" -p "Zaloguj się, a potem wciśnij ENTER (wpisany tekst jest ignorowany; czekam $((LOGIN_CONFIRM_TIMEOUT / 60)) min): " _ < /dev/tty; then
+        echo
+        echo "Nie doczekałem się ENTER — kończę bez meldunku i oddaję przeglądarkę cyklowi. Jeśli się zalogowałeś, najbliższy cykl sam to sprawdzi: przy zleceniach użyje sesji, bez zleceń ją zamknie."
+        exit 0
+      fi
       # ENTER jest dowodem zalogowania (tak stanowi procedura wyżej), więc meldunek
       # do LasVegas idzie od razu — użytkownik nie ma po co przepisywać drugiej
       # komendy. Do 14.09 drukowaliśmy wskazówkę z lv-api.sh, ale ten skrypt
@@ -853,6 +1001,7 @@ case "${1:-cycle}" in
         if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
           echo "Nie znalazłem tokenu urządzenia — meldunek pominięty. Zainstaluj agenta komendą z LasVegas (Podłącz agenta)." >&2
         elif lv_api 15 session "$LOGIN_SLUG" logged_in > /dev/null; then
+          session_tool "$LOGIN_SLUG" --session-seen > /dev/null || true
           echo "Zgłoszone do LasVegas: $LOGIN_SLUG zalogowany."
           echo "Saldo (opcjonalne, odświeża lustro konta w LasVegas): $0 session $LOGIN_SLUG logged_in 130.50"
         else
@@ -950,30 +1099,11 @@ esac
 # trap EXIT, który zwalnia lock, nie zdążyłby się wykonać.
 selfupdate_check
 
-# --- singleton lock (mkdir jest atomowe) -----------------------------------
-# Lock niesie PID cyklu. Do 2026-09-01 „stary" lock (>20 min) był kasowany
-# w ciemno — a realny przebieg z dwoma zleceniami trwa 20–30 min. Drugi agent
-# na tej samej przeglądarce i tym samym kuponie to podwójny zakład albo
-# rozjechany kupon. Żywy proces = lock ważny bez względu na wiek; wiek liczy
-# się tylko, gdy po procesie nie ma śladu (crash bez trap EXIT).
-if ! mkdir "$LOCK" 2>/dev/null; then
-  lock_pid=$(cat "$LOCK/pid" 2>/dev/null || echo "")
-  lock_age=$(( $(date +%s) - $(dir_mtime "$LOCK") ))
-  if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
-    log "inny cykl jeszcze trwa (pid $lock_pid, ${lock_age}s) — pomijam"
-    exit 0
-  fi
-  if [ "$lock_age" -gt 3600 ] || [ -n "$lock_pid" ]; then
-    # proces nie żyje (albo lock bez PID starszy niż godzina) — sprzątamy
-    rm -rf "$LOCK"
-    mkdir "$LOCK" 2>/dev/null || exit 0
-  else
-    log "inny cykl jeszcze trwa (lock ${lock_age}s, bez PID) — pomijam"
-    exit 0
-  fi
+# --- singleton lock -----------------------------------------------------------
+if ! acquire_lock; then
+  log "inny cykl jeszcze trwa ($LOCK_BUSY) — pomijam"
+  exit 0
 fi
-echo $$ > "$LOCK/pid"
-trap 'rm -rf "$LOCK"' EXIT
 
 # --- szybka ścieżka: skrypt stawia bez modelu -------------------------------
 # lv-place.py (STS, Superbet): nawigacja → rynek → stawka → weryfikacja („prepare”,
@@ -1090,6 +1220,7 @@ if [ -z "${LV_EXECUTOR_TOKEN:-}" ]; then
   log "BŁĄD: brak LV_EXECUTOR_TOKEN w $ENV_FILE — cykl pominięty"
   exit 1
 fi
+session_sync
 if ! QUEUE=$(queue_json); then
   log "BŁĄD: API LasVegas ($LV_API_URL) niedostępne — cykl pominięty"
   exit 1
@@ -1113,8 +1244,9 @@ if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
   # Pusta kolejka: nie budzimy LLM. Przeglądarkę tylko wtedy, gdy trzeba
   # zamknąć sesję zostawioną przy zleceniach z poprzednich cykli, albo gdy
   # serwer widzi kupony w kolejce wymagające zalogowania — wtedy logujemy się
+  # (ensure_logins samo startuje przeglądarkę, gdy jest kogo logować)
   # i pytamy o kolejkę jeszcze raz (bramka logowania mogła ją ukryć).
-  if [ -n "$LOGIN_STATE_SLUGS" ] && ensure_chrome; then
+  if [ -n "$LOGIN_STATE_SLUGS" ]; then
     ensure_logins ""
     QUEUE=$(queue_json) || { log "OSTRZEŻENIE: nie odświeżono kolejki po logowaniu"; QUEUE="[]"; }
   fi
@@ -1128,6 +1260,10 @@ if [ "$(printf '%s' "$QUEUE" | tr -d '[:space:]')" = "[]" ]; then
     # Sesje zostawione przy zleceniach z poprzednich cykli — jak dotąd.
     if [ -s "$KEPT_SESSIONS" ] && ensure_chrome; then
       logout_bookmakers "$(tr '\n' ' ' < "$KEPT_SESSIONS")"
+    fi
+    # Żywa przeglądarka bez zleceń: zamykamy w niej wszystkie sesje i ją samą.
+    if cdp_alive; then
+      close_idle_browser
     fi
     exit 0
   fi

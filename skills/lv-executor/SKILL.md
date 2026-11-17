@@ -1,7 +1,7 @@
 ---
 name: lv-executor
 description: Egzekwuje zlecenia zakładów z LasVegas u bukmacherów (Superbet, STS, Betclic, Betfan)
-version: 1.5.25
+version: 1.5.26
 platforms: [macos, linux, windows]
 metadata:
   hermes:
@@ -93,7 +93,11 @@ na stdout dostajesz JEDNĄ linię JSON — nigdy login ani hasło:
   agenta; złe lub brak poświadczeń → `lv-executor-cycle.sh credentials <slug>`)
   i POMIŃ w tym cyklu zlecenia tego buka — `claim` odrzuciłby je 404. Zlecenia
   zostają w kolejce; podejmie je następny cykl po zalogowaniu. LasVegas sam
-  wysyła użytkownikowi powiadomienie z tym powodem.
+  wysyła użytkownikowi powiadomienie z tym powodem,
+- `"reason":"session_budget"` → agent był dziś u tego buka zalogowany 4 godziny
+  i do północy skrypt nie zaloguje nikogo (bukmacher liczy czas zalogowania do
+  dziennego limitu gry właściciela). To nie awaria: NIC nie melduj, nie próbuj
+  logować się inną drogą, POMIŃ zlecenia tego buka — poczekają do jutra.
 
 Krok 5 powtarza weryfikację na ekranie tuż przed kuponem — bramka patrzy na
 pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
@@ -198,7 +202,12 @@ pieczątkę z raportu, nie na to, co widzisz teraz; ten sam meldunek
 10. **Wylogowanie po pracy.** Bukmacherzy liczą CZAS zalogowania do dziennego
     limitu gry (STS: „Osiągnięto dzienny limit czasu gry" po kilku sesjach
     agenta — 01.09), więc sesja nie ma prawa wisieć między cyklami. Na macOS
-    i Linuksie robi to cykl po Twoim biegu. Gdy pracujesz bez cyklu (Windows,
+    i Linuksie robi to cykl po Twoim biegu, a przy pustej kolejce zamyka każdą
+    sesję zastaną w przeglądarce agenta i gasi samą przeglądarkę (11–17.11
+    sesja STS zalogowana z ręki wisiała tam 6,5 doby). Czas zalogowania mierzy
+    `lv-login.py` i po 4 h jednego dnia u danego buka odmawia logowania do
+    północy (`session_budget`) — cyklowi i Tobie tak samo.
+    Gdy pracujesz bez cyklu (Windows,
     wywołanie ręczne), po ostatnim zleceniu dla KAŻDEGO buka, u którego byłeś
     zalogowany: `python3 scripts/lv-login.py <slug> --logout` (Windows:
     `python scripts\lv-login.py <slug> --logout`), a po `"state":"logged_out"`

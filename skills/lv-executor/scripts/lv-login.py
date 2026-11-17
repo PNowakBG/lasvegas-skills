@@ -9,6 +9,8 @@ i wypisuje na stdout WYŁĄCZNIE wynik jako JSON — bez loginu, bez hasła.
 
 Użycie:
   lv-login.py <sts|superbet> [--check-only] [--logout] [--cdp http://localhost:9222]
+  lv-login.py <sts|superbet> --session-status | --session-seen | --session-end
+                             | --session-sync=alive | --session-sync=dead
 
 --logout: zamyka sesję u buka (przycisk „Wyloguj”, w odwodzie wyczyszczenie danych
 witryny). Bukmacherzy liczą CZAS zalogowania do dziennego limitu gry, więc sesja
@@ -21,7 +23,19 @@ Wyjście (stdout, jedna linia JSON):
 Kody wyjścia: 0 = zalogowany (przy --logout: wylogowany), 1 = nie (reason w JSON),
 2 = błąd użycia. Powody `logged_out` (te same kody rozumie LasVegas i baner uwagi):
   no_credentials, bad_credentials, captcha, two_factor, login_form_not_found,
-  login_error, not_logged_in (tylko --check-only), session_closed (po --logout).
+  login_error, not_logged_in (tylko --check-only), session_closed (po --logout),
+  session_budget (dzienny budżet czasu zalogowania wyczerpany — bez próby logowania).
+
+Czas zalogowania: bukmacher liczy do dziennego limitu gry cały czas sesji, więc ten
+skrypt — jedyna droga logowania i cyklu, i modelu — prowadzi licznik na dysku
+($HERMES_HOME/lv-session-open-<buk>, lv-session-time-<buk>) i po 4 h jednego dnia
+odmawia logowania do północy. Otwarta sesja liczy się od logowania do TERAZ, aż
+zamknie ją wylogowanie — także przez cały bieg modelu. --session-status: stan
+licznika (kod 3 = budżet wyczerpany); --session-seen: zalogowano z ręki;
+--session-end: sesja skończona bez wylogowania skryptem; --session-sync=alive|dead:
+uzgodnienie na początku cyklu — przeglądarka żyje (otwarta sesja potwierdzona)
+albo nie żyje (nic sesji nie podtrzymuje: rozliczenie do ostatniego potwierdzenia).
+Te tryby nie dotykają przeglądarki.
 
 Poświadczenia w pliku (chmod 600), klucze:
   LV_STS_LOGIN=…        LV_STS_PASSWORD=…
@@ -37,6 +51,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from os import environ as OS_ENV
 from pathlib import Path
 
@@ -58,6 +73,140 @@ BOOKMAKERS = {
         "url": "https://superbet.pl/",
     },
 }
+
+
+# --- czas zalogowania u buka ---------------------------------------------------
+# 11–17.11.2026: sesja STS wisiała w oknie agenta 6,5 doby bez jednego zlecenia
+# i dzienny limit czasu gry właściciela schodził co dzień. Budżet to mur, nie cel:
+# najcięższy dzień agenta w logach to 123 min (17.09), zwykły poniżej 40 — 4 h to
+# dwukrotny zapas i wciąż ułamek limitu, który zostaje właścicielowi.
+SESSION_DAY_BUDGET_S = 4 * 3600
+# Otwartą sesję zamyka wylogowanie albo uzgodnienie cyklu (--session-sync=dead).
+# Próg wieku jest tylko odwodem dla pracy BEZ cyklu (Windows): po awarii nikt by
+# znacznika nie zamknął, rósłby bez końca i na stałe zablokował logowanie. Sześć
+# godzin bez potwierdzenia to więcej niż jakikolwiek bieg — krótszy próg rozliczał
+# sesję w trakcie długiego biegu modelu i gubił jego czas z budżetu.
+SESSION_STALE_S = 6 * 3600
+# To samo zdanie zwraca program harnessu, gdy przy wylogowaniu sesji już nie było.
+ALREADY_CLOSED = "sesja była już zamknięta"
+
+
+def session_open_file(slug: str) -> Path:
+    return HERMES_HOME / f"lv-session-open-{slug}"
+
+
+def session_time_file(slug: str) -> Path:
+    return HERMES_HOME / f"lv-session-time-{slug}"
+
+
+def session_start(slug: str) -> int | None:
+    try:
+        return int(session_open_file(slug).read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def session_seen(slug: str, now: float) -> None:
+    """Pierwsze wywołanie otwiera licznik; kolejne tylko potwierdzają, że sesja trwa."""
+    marker = session_open_file(slug)
+    try:
+        if session_start(slug) is None:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(f"{int(now)}\n")
+        os.utime(marker, (now, now))
+    except OSError:
+        pass
+
+
+def day_slices(start: float, end: float) -> list[tuple[str, int]]:
+    """Czas sesji rozbity na doby kalendarzowe — sesja przez północ obciąża oba dni."""
+    slices = []
+    cursor = start
+    while cursor < end:
+        day = datetime.fromtimestamp(cursor)
+        midnight = (day.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).timestamp()
+        stop = min(end, midnight)
+        slices.append((day.strftime("%Y-%m-%d"), int(stop - cursor)))
+        cursor = stop
+    return slices
+
+
+def session_end(slug: str, now: float, at_last_seen: bool = False) -> int | None:
+    """Zamyka licznik i zwraca sekundy sesji. at_last_seen: sesja skończyła się nie
+    wiadomo kiedy (bukmacher zamknął ją sam, komputer padł) — liczymy ją do
+    ostatniego potwierdzenia, nie do teraz."""
+    marker = session_open_file(slug)
+    start = session_start(slug)
+    end = now
+    if at_last_seen:
+        try:
+            end = marker.stat().st_mtime
+        except OSError:
+            pass
+    try:
+        marker.unlink()
+    except OSError:
+        pass
+    if start is None or end < start:
+        return None
+    try:
+        with session_time_file(slug).open("a") as ledger:
+            for day, seconds in day_slices(start, end):
+                ledger.write(f"{day} {seconds}\n")
+    except OSError:
+        pass
+    return int(end - start)
+
+
+def session_reap(slug: str, now: float) -> None:
+    """Odwód dla pracy bez cyklu — patrz SESSION_STALE_S."""
+    try:
+        seen = session_open_file(slug).stat().st_mtime
+    except OSError:
+        return
+    if now - seen > SESSION_STALE_S:
+        session_end(slug, now, at_last_seen=True)
+
+
+def session_sync(slug: str, now: float, browser_alive: bool) -> None:
+    """Uzgodnienie licznika z rzeczywistością na początku cyklu. Bez przeglądarki
+    agenta nic sesji nie podtrzymuje (restart komputera, zabity Chrome), więc
+    kończy się na ostatnim potwierdzeniu; z żywą przeglądarką otwarta sesja jest
+    potwierdzana. Nigdy nie otwiera licznika — to robi tylko logowanie."""
+    if session_start(slug) is None:
+        return
+    if browser_alive:
+        session_seen(slug, now)
+    else:
+        session_end(slug, now, at_last_seen=True)
+
+
+def session_used_today(slug: str, now: float) -> int:
+    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    total = 0
+    try:
+        for line in session_time_file(slug).read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == today and parts[1].isdigit():
+                total += int(parts[1])
+    except OSError:
+        pass
+    start = session_start(slug)
+    if start is not None and start <= now:
+        total += sum(seconds for day, seconds in day_slices(start, now) if day == today)
+    return total
+
+
+def session_status(slug: str, now: float) -> dict:
+    session_reap(slug, now)
+    used = session_used_today(slug, now)
+    return {
+        "bookmaker": slug,
+        "open": session_start(slug) is not None,
+        "usedTodayMin": used // 60,
+        "budgetMin": SESSION_DAY_BUDGET_S // 60,
+        "spent": used >= SESSION_DAY_BUDGET_S,
+    }
 
 
 def emit(result: dict, code: int) -> "int":
@@ -512,7 +661,11 @@ try:
     else:
         sb_login()
 except Exception as exc:
-    out("logged_out", "login_error", "wyjątek harnessu: %s" % str(exc)[:200])
+    # Przy wylogowaniu wyjątek nie mówi nic o sesji — nie wolno zgłosić jej jako zamkniętej.
+    if MODE == "logout":
+        out("logged_in", "logout_failed", "wyjątek harnessu: %s" % str(exc)[:200])
+    else:
+        out("logged_out", "login_error", "wyjątek harnessu: %s" % str(exc)[:200])
 '''
 
 
@@ -580,8 +733,38 @@ def main(argv: list[str]) -> int:
         sys.stderr.write("użycie: lv-login.py <sts|superbet> [--check-only] [--cdp URL]\n")
         return 2
     slug = args[0]
+    # Tryby licznika: bez przeglądarki i bez poświadczeń.
+    if "--session-status" in flags:
+        status = session_status(slug, time.time())
+        return emit(status, 3 if status["spent"] else 0)
+    if "--session-seen" in flags:
+        session_seen(slug, time.time())
+        return emit(session_status(slug, time.time()), 0)
+    if "--session-end" in flags:
+        session_end(slug, time.time())
+        return emit(session_status(slug, time.time()), 0)
+    if "--session-sync=alive" in flags or "--session-sync=dead" in flags:
+        session_sync(slug, time.time(), "--session-sync=alive" in flags)
+        status = session_status(slug, time.time())
+        return emit(status, 3 if status["spent"] else 0)
     check_only = "--check-only" in flags
     mode = "logout" if "--logout" in flags else "login"
+    # Budżet stoi PRZED przeglądarką i przed plikiem poświadczeń: tędy loguje się
+    # i cykl, i model, więc żadna z dróg nie obejdzie go drugą.
+    if mode == "login" and not check_only:
+        status = session_status(slug, time.time())
+        if status["spent"]:
+            return emit(
+                {
+                    "bookmaker": slug,
+                    "state": "logged_out",
+                    "reason": "session_budget",
+                    "detail": "agent był dziś zalogowany %d min — dzienny budżet %d min wyczerpany, "
+                    "do północy bez logowania" % (status["usedTodayMin"], status["budgetMin"]),
+                    "balance": None,
+                },
+                1,
+            )
     cdp = os.environ.get("BU_CDP_URL") or DEFAULT_CDP
     for flag in flags:
         if flag.startswith("--cdp="):
@@ -608,6 +791,16 @@ def main(argv: list[str]) -> int:
         )
     result.setdefault("balance", None)
     result["elapsedS"] = round(time.time() - started, 1)
+    now = time.time()
+    if result.get("state") == "logged_in":
+        # Także po nieudanym wylogowaniu: sesja trwa, licznik biegnie dalej.
+        session_seen(slug, now)
+    elif mode == "logout" and result.get("reason") == "session_closed":
+        spent = session_end(slug, now, at_last_seen=result.get("detail") == ALREADY_CLOSED)
+        if spent is not None:
+            result["sessionMin"] = spent // 60
+            result["usedTodayMin"] = session_used_today(slug, now) // 60
+            result["budgetMin"] = SESSION_DAY_BUDGET_S // 60
     # Bez poświadczeń wynik jest z góry znany — ale dopiero po sprawdzeniu, czy
     # sesja nie żyje z poprzedniego logowania (ciasteczka profilu agenta).
     if result.get("state") == "logged_out" and result.get("reason") == "no_credentials":

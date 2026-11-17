@@ -327,7 +327,9 @@ sekwencję; nigdy nie klikaj Postaw przy złej kwocie.
   nieznany tekst → `failed ui_error` z jego treścią.
 - **Dzienny limit czasu gry (Odpowiedzialna gra) liczy CZAS SESJI, także sesje agenta.**
   Bieg 35–40 min ×4 w jeden dzień zjada limit sam z siebie. Po pracy sesję ZAMYKA
-  `lv-login.py sts --logout` (cykl albo Ty — SKILL.md pkt 10).
+  `lv-login.py sts --logout` (cykl albo Ty — SKILL.md pkt 10). Sesja zostawiona
+  w oknie agenta bez zleceń zjada limit tak samo (11–17.11: 6,5 doby) — przy
+  pustej kolejce cykl ją zamyka i gasi przeglądarkę.
 - **API LasVegas zwracał przejściowe `403/503`** (09.10: `curl (22) … error: 503` na
   wszystkich endpointach przez ~1 min). Reakcja: ponawiaj `lv-api.sh <cmd>` po ~10 s aż
   do sukcesu (pętla); zlecenie/claim/raport nie giną — `claim` wraca, a `placed` po
